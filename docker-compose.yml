@@ -1,0 +1,108 @@
+version: "3.9"
+
+services:
+  db:
+    image: postgis/postgis:16-3.4
+    environment:
+      POSTGRES_USER: swms
+      POSTGRES_PASSWORD: swms
+      POSTGRES_DB: swms
+    ports:
+      - "5432:5432"
+    volumes:
+      - swms_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U swms"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # quay.io, not docker.io: MinIO stopped publishing new tags to Docker Hub,
+  # so `minio/minio` there is stale/rate-limited. quay.io/minio/minio is
+  # MinIO's own current registry.
+  minio:
+    image: quay.io/minio/minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: swms_minio
+      MINIO_ROOT_PASSWORD: swms_minio_secret
+    ports:
+      - "9000:9000" # S3 API
+      - "9001:9001" # web console
+    volumes:
+      - swms_miniodata:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build: .
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    environment:
+      DATABASE_URL: postgresql+asyncpg://swms:swms@db:5432/swms
+      JWT_SECRET: dev-only-secret-change-me
+      JWT_ALGORITHM: HS256
+      ACCESS_TOKEN_EXPIRE_MINUTES: 15
+      REFRESH_TOKEN_EXPIRE_DAYS: 7
+      ENVIRONMENT: development
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: swms_minio
+      MINIO_SECRET_KEY: swms_minio_secret
+      MINIO_BUCKET: swms-uploads
+      MINIO_SECURE: "false"
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # "ingest" queue only, for this session's M5 work (dataset uploads). The
+  # "simulate" and "optimize" queues/workers are added in Drop 2 (Prompt 5/6)
+  # when there is an engine for them to actually call — an empty worker
+  # bound to a queue with no tasks yet is nothing to test or demo.
+  worker-ingest:
+    build: .
+    command: celery -A app.workers.celery_app worker --loglevel=info --queues=ingest --concurrency=2
+    environment:
+      DATABASE_URL: postgresql+asyncpg://swms:swms@db:5432/swms
+      JWT_SECRET: dev-only-secret-change-me
+      JWT_ALGORITHM: HS256
+      ENVIRONMENT: development
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: swms_minio
+      MINIO_SECRET_KEY: swms_minio_secret
+      MINIO_BUCKET: swms-uploads
+      MINIO_SECURE: "false"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+volumes:
+  swms_pgdata:
+  swms_miniodata:
