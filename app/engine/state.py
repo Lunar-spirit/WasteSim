@@ -52,7 +52,8 @@ class State:
     vehicles_added_this_month: int = 0
 
 
-def initial_state(params: dict, coeffs: Coefficients) -> State:
+def initial_state(params: dict, coeffs: Coefficients, config: dict | None = None) -> State:
+    config = config or {}
     demography = params["demography"]
     community = params["community_infrastructure"]
     baseline = params["waste_baseline"]
@@ -72,6 +73,12 @@ def initial_state(params: dict, coeffs: Coefficients) -> State:
     # "Left blank, the engine assumes the landfill starts full" — the exact
     # rule stated in the landfill_remaining_tonnes catalogue help_text.
     landfill_remaining = landfill_capacity if landfill_remaining is None else float(landfill_remaining)
+    # An OPTIMIZED candidate's landfill_expansion_tonnes decision variable
+    # (design 5.6) is modelled as capex committed before month 1 — it
+    # widens the void the run starts with, rather than a mid-run ramp. A
+    # BASE/SCENARIO run never sets this key, so landfill_remaining is
+    # unchanged for every run this project already has tests for.
+    landfill_remaining += float(config.get("plan_added_landfill_tonnes", 0.0))
 
     return State(
         population=population,
@@ -79,4 +86,10 @@ def initial_state(params: dict, coeffs: Coefficients) -> State:
         composition=composition,
         landfill_cumulative_tonnes=0.0,
         landfill_remaining_tonnes=landfill_remaining,
+        # Same reasoning: an optimization plan's add_vehicles/
+        # add_treatment_capacity_tpd are bought immediately (month 1), reusing
+        # the AUTO capex policy's own accumulators so step.py's Part 7/Part 9
+        # math (which already reads *_added_cumulative) needs no change.
+        vehicles_added_cumulative=int(config.get("plan_added_vehicles", 0)),
+        capacity_added_cumulative=float(config.get("plan_added_treatment_capacity_tpd", 0.0)),
     )

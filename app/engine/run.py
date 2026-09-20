@@ -27,7 +27,7 @@ def run(
 ) -> dict[str, Any]:
     config = config or {}
     coeffs = load_coefficients(coeffs_raw)
-    state = initial_state(params, coeffs)
+    state = initial_state(params, coeffs, config)
 
     history: list[dict[str, Any]] = []
     for month in range(1, months + 1):

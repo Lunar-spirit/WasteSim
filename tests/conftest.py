@@ -13,6 +13,7 @@ os.environ.setdefault(
 from app.audit import models as _audit_models  # noqa: E402,F401
 from app.auth import models as _auth_models  # noqa: E402,F401
 from app.auth.models import User, UserRole  # noqa: E402
+from app.budget import models as _budget_models  # noqa: E402,F401
 from app.core.config import settings  # noqa: E402
 from app.core.db import Base, get_db  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
@@ -20,8 +21,11 @@ from app.gis import models as _gis_models  # noqa: E402,F401
 from app.habitation import models as _habitation_models  # noqa: E402,F401
 from app.ingestion import models as _ingestion_models  # noqa: E402,F401
 from app.main import app  # noqa: E402
+from app.optimization import models as _optimization_models  # noqa: E402,F401
 from app.parameters import models as _parameters_models  # noqa: E402,F401
 from app.parameters.models import DataType, ParameterDefinition  # noqa: E402
+from app.scenario import models as _scenario_models  # noqa: E402,F401
+from app.simulation import models as _simulation_models  # noqa: E402,F401
 from app.validation import models as _validation_models  # noqa: E402,F401
 from sqlalchemy import select  # noqa: E402
 
@@ -147,6 +151,11 @@ async def researcher_user(db_session):
     return await _make_user(db_session, UserRole.RESEARCHER)
 
 
+@pytest_asyncio.fixture
+async def admin_user(db_session):
+    return await _make_user(db_session, UserRole.ADMIN)
+
+
 async def _login(client, email: str, password: str) -> str:
     resp = await client.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert resp.status_code == 200, resp.text
@@ -163,5 +172,12 @@ async def planner_headers(client, planner_user):
 @pytest_asyncio.fixture
 async def researcher_headers(client, researcher_user):
     user, password = researcher_user
+    token = await _login(client, user.email, password)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest_asyncio.fixture
+async def admin_headers(client, admin_user):
+    user, password = admin_user
     token = await _login(client, user.email, password)
     return {"Authorization": f"Bearer {token}"}

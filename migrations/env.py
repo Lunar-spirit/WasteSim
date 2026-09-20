@@ -18,6 +18,10 @@ from app.parameters import models as _parameters_models  # noqa: F401
 from app.validation import models as _validation_models  # noqa: F401
 from app.gis import models as _gis_models  # noqa: F401
 from app.ingestion import models as _ingestion_models  # noqa: F401
+from app.simulation import models as _simulation_models  # noqa: F401
+from app.budget import models as _budget_models  # noqa: F401
+from app.optimization import models as _optimization_models  # noqa: F401
+from app.scenario import models as _scenario_models  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)

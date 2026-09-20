@@ -84,5 +84,16 @@ def capacity_delta_tpd(active_events: list[dict[str, Any]]) -> float:
     )
 
 
+def population_surge_multiplier(active_events: list[dict[str, Any]]) -> float:
+    """A POPULATION_SURGE event multiplies P_eff for its window (design
+    5.5's table: "P_eff multiplied for the window"). Multiple surges
+    compose multiplicatively, same as accessibility_multiplier."""
+    factor = 1.0
+    for event in active_events:
+        surge_pct = event.get("impact_params", {}).get("population_surge_pct", 0.0) * event["_ramp"]
+        factor *= 1.0 + surge_pct / 100.0
+    return factor
+
+
 def active_event_codes(active_events: list[dict[str, Any]]) -> list[str]:
     return [event["event_type"] for event in active_events]

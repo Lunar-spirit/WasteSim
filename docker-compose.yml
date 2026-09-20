@@ -75,13 +75,39 @@ services:
       minio:
         condition: service_healthy
 
-  # "ingest" queue only, for this session's M5 work (dataset uploads). The
-  # "simulate" and "optimize" queues/workers are added in Drop 2 (Prompt 5/6)
-  # when there is an engine for them to actually call — an empty worker
-  # bound to a queue with no tasks yet is nothing to test or demo.
+  # "ingest" queue: dataset uploads (M5) and GIS layer loads (M4/BG-01).
+  # "optimize" isn't added yet — no optimization search exists to call
+  # until module M11 (Drop 2, a later session).
   worker-ingest:
     build: .
     command: celery -A app.workers.celery_app worker --loglevel=info --queues=ingest --concurrency=2
+    environment:
+      DATABASE_URL: postgresql+asyncpg://swms:swms@db:5432/swms
+      JWT_SECRET: dev-only-secret-change-me
+      JWT_ALGORITHM: HS256
+      ENVIRONMENT: development
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: swms_minio
+      MINIO_SECRET_KEY: swms_minio_secret
+      MINIO_BUCKET: swms-uploads
+      MINIO_SECURE: "false"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # "simulate" queue: BG-04, the 240-month engine run. A separate queue and
+  # worker from "ingest" (design AD-18) so a multi-second simulation never
+  # queues behind — or blocks — a file upload, and vice versa.
+  worker-simulate:
+    build: .
+    command: celery -A app.workers.celery_app worker --loglevel=info --queues=simulate --concurrency=2
     environment:
       DATABASE_URL: postgresql+asyncpg://swms:swms@db:5432/swms
       JWT_SECRET: dev-only-secret-change-me

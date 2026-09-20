@@ -69,6 +69,11 @@ _DEFAULTS: dict[str, Any] = {
     "avg_vehicle_capacity_tonnes": 5.0,
     "trips_per_vehicle_day": 2.0,
     "fleet_availability": 0.85,
+    # A transfer station shortens the round trip to disposal, so each vehicle
+    # manages more trips/day. Design 5.6 names the effect ("improves effective
+    # trips per vehicle per day") without a magnitude — this figure is a
+    # scope decision, not a design value.
+    "transfer_station_trip_uplift_pct": 15.0,
     # --- Step 10: cost ---
     "cost_collection_per_tonne": 450.0,
     "cost_treatment_per_tonne": 900.0,
@@ -111,3 +116,12 @@ class Coefficients:
 
 def load(raw: dict[str, Any]) -> Coefficients:
     return Coefficients(raw)
+
+
+def default_values() -> dict[str, Any]:
+    """A plain copy of every built-in default — what app/simulation/service.py
+    seeds coefficient_sets with the first time a run is requested and no
+    default calibration exists yet (see that module for why this can't
+    simply be an Alembic data migration: coefficient_sets.created_by is a
+    NOT NULL FK to users, and no user exists yet at migration time)."""
+    return dict(_DEFAULTS)

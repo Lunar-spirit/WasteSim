@@ -17,6 +17,7 @@ from app.engine.events import (
     active_event_codes,
     capacity_delta_tpd,
     coverage_delta_pct,
+    population_surge_multiplier,
 )
 from app.engine.state import State
 
@@ -75,7 +76,7 @@ def step(
         if is_festival_month
         else 0.0
     )
-    population_effective = population + floating + surge
+    population_effective = (population + floating + surge) * population_surge_multiplier(active_events)
 
     # ---- Part 2: Per-capita generation --------------------------------
     income_growth_pct = float(
@@ -162,8 +163,12 @@ def step(
         exhaustion_month = month
 
     # ---- Part 9: Fleet ------------------------------------------------------
+    transfer_stations = int(config.get("plan_transfer_stations", 0))
+    trips_per_vehicle_day = coeffs["trips_per_vehicle_day"] * (
+        1.0 + coeffs["transfer_station_trip_uplift_pct"] / 100.0 * transfer_stations
+    )
     trips_needed = waste_collected / coeffs["avg_vehicle_capacity_tonnes"] if coeffs["avg_vehicle_capacity_tonnes"] else 0.0
-    vehicles_needed = math.ceil(trips_needed / (coeffs["trips_per_vehicle_day"] * coeffs["fleet_availability"])) if trips_needed > 0 else 0
+    vehicles_needed = math.ceil(trips_needed / (trips_per_vehicle_day * coeffs["fleet_availability"])) if trips_needed > 0 else 0
     vehicles_have = int(community.get("collection_vehicles_count") or 0) + state.vehicles_added_cumulative
     shortfall = max(0, vehicles_needed - vehicles_have)
 
@@ -235,6 +240,12 @@ def step(
         "waste_collected_tpd": waste_collected,
         "waste_uncollected_tpd": waste_uncollected,
         "segregation_pct": segregation,
+        # Not a simulation_results column — pre-capacity-cap organic load,
+        # carried only so app/optimization/search.py's LP polish can size
+        # add_treatment_capacity_tpd against a real number instead of
+        # guessing (once capacity caps it, organic_treated_tpd alone can't
+        # tell you how much more capacity would actually help).
+        "organic_seg_tpd": organic_seg,
         "organic_treated_tpd": organic_treated,
         "recyclables_recovered_tpd": dry_recovered,
         "compost_output_tpd": compost_output,
@@ -252,6 +263,11 @@ def step(
         "vehicle_shortfall": shortfall,
         "opex_inr": opex,
         "capex_inr": capex,
+        # Not simulation_results columns — carried only so
+        # app/budget/service.py can split capex_inr into FLEET_PURCHASE vs
+        # INFRASTRUCTURE budget_lines without re-deriving them from state.
+        "vehicles_added_this_month": vehicles_added_this_month,
+        "capacity_added_this_month": capacity_added_this_month,
         "ghg_tco2e": ghg_net,
         "active_event_codes": active_event_codes(active_events),
     }

@@ -27,6 +27,7 @@ structlog==24.4.0
 httpx==0.27.2
 celery==5.4.0
 redis==5.0.8
+pulp==2.9.0
 # Official MinIO client (not boto3): the stack only needs put/get/stat on one
 # bucket, and the MinIO SDK's API matches the design's "object key" language
 # 1:1. CLAUDE.md section 4 says "MinIO / S3" without naming a client library,
