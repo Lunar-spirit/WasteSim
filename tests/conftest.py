@@ -14,6 +14,8 @@ from app.audit import models as _audit_models  # noqa: E402,F401
 from app.auth import models as _auth_models  # noqa: E402,F401
 from app.auth.models import User, UserRole  # noqa: E402
 from app.budget import models as _budget_models  # noqa: E402,F401
+from app.chat import models as _chat_models  # noqa: E402,F401
+from app.comparison import models as _comparison_models  # noqa: E402,F401
 from app.core.config import settings  # noqa: E402
 from app.core.db import Base, get_db  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
@@ -24,7 +26,9 @@ from app.main import app  # noqa: E402
 from app.optimization import models as _optimization_models  # noqa: E402,F401
 from app.parameters import models as _parameters_models  # noqa: E402,F401
 from app.parameters.models import DataType, ParameterDefinition  # noqa: E402
+from app.reports import models as _reports_models  # noqa: E402,F401
 from app.scenario import models as _scenario_models  # noqa: E402,F401
+from app.sensitivity import models as _sensitivity_models  # noqa: E402,F401
 from app.simulation import models as _simulation_models  # noqa: E402,F401
 from app.validation import models as _validation_models  # noqa: E402,F401
 from sqlalchemy import select  # noqa: E402
@@ -84,9 +88,15 @@ async def db_session():
 # exercise: one required numeric field per relevant category, plus the
 # demography.annual_growth_rate_pct range used in the design doc's example.
 TEST_DEFINITIONS = [
-    ("demography", "population", "Population", "INTEGER", 1, 10_000_000, True),
-    ("demography", "annual_growth_rate_pct", "Annual growth rate", "NUMERIC", -5, 10, True),
-    ("waste_baseline", "per_capita_generation_kg_day", "Per-capita generation", "NUMERIC", 0.05, 5, True),
+    # category, param_key, label, data_type, min, max, required, is_sweepable
+    # annual_growth_rate_pct's is_sweepable=True mirrors the real catalogue
+    # seed in migrations/versions/0004_expand_parameter_catalogue.py — this
+    # fixture is a deliberately small stand-in for that seed, not a
+    # different policy, so module M10 (sensitivity) sweeps against the same
+    # parameter the real catalogue allows.
+    ("demography", "population", "Population", "INTEGER", 1, 10_000_000, True, False),
+    ("demography", "annual_growth_rate_pct", "Annual growth rate", "NUMERIC", -5, 10, True, True),
+    ("waste_baseline", "per_capita_generation_kg_day", "Per-capita generation", "NUMERIC", 0.05, 5, True, False),
 ]
 
 
@@ -95,7 +105,7 @@ async def seed_parameter_definitions(db_session):
     existing = await db_session.scalar(select(ParameterDefinition).limit(1))
     if existing is not None:
         return
-    for category, key, label, data_type, lo, hi, required in TEST_DEFINITIONS:
+    for category, key, label, data_type, lo, hi, required, sweepable in TEST_DEFINITIONS:
         db_session.add(
             ParameterDefinition(
                 category=category,
@@ -105,6 +115,7 @@ async def seed_parameter_definitions(db_session):
                 min_value=lo,
                 max_value=hi,
                 is_required=required,
+                is_sweepable=sweepable,
             )
         )
     await db_session.commit()

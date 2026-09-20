@@ -22,9 +22,13 @@ from app.budget import models as _budget_models  # noqa: F401
 from app.gis import models as _gis_models  # noqa: F401
 from app.habitation import models as _habitation_models  # noqa: F401
 from app.ingestion import models as _ingestion_models  # noqa: F401
+from app.chat import models as _chat_models  # noqa: F401
+from app.comparison import models as _comparison_models  # noqa: F401
 from app.optimization import models as _optimization_models  # noqa: F401
 from app.parameters import models as _parameters_models  # noqa: F401
+from app.reports import models as _reports_models  # noqa: F401
 from app.scenario import models as _scenario_models  # noqa: F401
+from app.sensitivity import models as _sensitivity_models  # noqa: F401
 from app.simulation import models as _simulation_models  # noqa: F401
 from app.validation import models as _validation_models  # noqa: F401
 
@@ -37,6 +41,9 @@ celery_app = Celery(
         "app.workers.tasks_gis",
         "app.workers.tasks_simulate",
         "app.workers.tasks_optimize",
+        "app.workers.tasks_sensitivity",
+        "app.workers.tasks_reports",
+        "app.workers.beat",
     ],
 )
 
@@ -46,6 +53,8 @@ celery_app.conf.update(
         "app.workers.tasks_gis.*": {"queue": "ingest"},
         "app.workers.tasks_simulate.*": {"queue": "simulate"},
         "app.workers.tasks_optimize.*": {"queue": "optimize"},
+        "app.workers.tasks_sensitivity.*": {"queue": "simulate"},
+        "app.workers.tasks_reports.*": {"queue": "ingest"},
     },
     # A worker that dies mid-task re-delivers the task instead of losing it
     # (rule: "worker killed mid-job -> job re-delivered, no partial data").

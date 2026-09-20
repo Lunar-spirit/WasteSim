@@ -23,5 +23,13 @@ class Settings(BaseSettings):
 
     max_upload_size_bytes: int = 50 * 1024 * 1024  # 50 MB, PDD-11
 
+    # EXT-05 (LLM provider): optional by design. None (the default, and
+    # .env.example's placeholder) means module M15's deterministic
+    # keyword/regex matcher answers every question instead — the feature
+    # must fully demonstrate offline. Set this in .env to turn on real
+    # intent extraction and prose polishing via the Anthropic API.
+    anthropic_api_key: str | None = None
+    anthropic_model: str = "claude-haiku-4-5-20251001"
+
 
 settings = Settings()

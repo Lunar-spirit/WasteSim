@@ -2,6 +2,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, Request, status
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
@@ -48,10 +49,15 @@ def register_exception_handlers(app: FastAPI) -> None:
         request: Request, exc: RequestValidationError
     ) -> JSONResponse:
         request_id = getattr(request.state, "request_id", "unknown")
+        # jsonable_encoder, not exc.errors() directly: a custom validator
+        # (e.g. a Pydantic model_validator) that raises a bare ValueError
+        # produces an error dict whose "ctx" holds the original exception
+        # object, which plain json.dumps cannot serialize and would crash
+        # this handler with a 500 instead of the 400 it is trying to return.
         return JSONResponse(
             status_code=status.HTTP_400_BAD_REQUEST,
             content=_envelope(
-                "VALIDATION_ERROR", "Request body failed validation", exc.errors(), request_id
+                "VALIDATION_ERROR", "Request body failed validation", jsonable_encoder(exc.errors()), request_id
             ),
         )
 

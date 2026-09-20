@@ -11,6 +11,7 @@ not the multi-second GIS/tabular parsing work that actually needs a worker).
 from __future__ import annotations
 
 import io
+from datetime import timedelta
 
 from minio import Minio
 from minio.error import S3Error
@@ -59,6 +60,17 @@ def put_object(key: str, data: bytes, content_type: str) -> None:
             length=len(data),
             content_type=content_type,
         )
+    except S3Error as exc:
+        raise AppError("STORAGE_UNAVAILABLE", f"Object storage unreachable: {exc}", 503) from exc
+
+
+def get_presigned_url(key: str, expires_seconds: int) -> str:
+    """A time-limited download URL (design's own words for reports.expires_at
+    / EXT-04's "time-limited download URL") — the caller never gets a raw
+    bucket path, only a signed link that stops working after `expires_seconds`."""
+    client = get_client()
+    try:
+        return client.presigned_get_object(settings.minio_bucket, key, expires=timedelta(seconds=expires_seconds))
     except S3Error as exc:
         raise AppError("STORAGE_UNAVAILABLE", f"Object storage unreachable: {exc}", 503) from exc
 

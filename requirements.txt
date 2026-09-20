@@ -35,6 +35,8 @@ pulp==2.9.0
 minio==7.2.9
 pandas==2.2.3
 openpyxl==3.1.5
+weasyprint==70.0
+anthropic==1.7.0
 pytest==8.3.3
 pytest-asyncio==0.24.0
 pytest-cov==5.0.0

@@ -22,6 +22,10 @@ from app.simulation import models as _simulation_models  # noqa: F401
 from app.budget import models as _budget_models  # noqa: F401
 from app.optimization import models as _optimization_models  # noqa: F401
 from app.scenario import models as _scenario_models  # noqa: F401
+from app.sensitivity import models as _sensitivity_models  # noqa: F401
+from app.comparison import models as _comparison_models  # noqa: F401
+from app.reports import models as _reports_models  # noqa: F401
+from app.chat import models as _chat_models  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", settings.database_url)

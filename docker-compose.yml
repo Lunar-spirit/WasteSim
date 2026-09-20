@@ -63,6 +63,10 @@ services:
       MINIO_SECRET_KEY: swms_minio_secret
       MINIO_BUCKET: swms-uploads
       MINIO_SECURE: "false"
+      # Module M15 (chat): optional. Leave blank/unset and the chatbot runs
+      # entirely on its deterministic keyword matcher — see .env.example.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
     ports:
       - "8000:8000"
     volumes:
@@ -75,9 +79,8 @@ services:
       minio:
         condition: service_healthy
 
-  # "ingest" queue: dataset uploads (M5) and GIS layer loads (M4/BG-01).
-  # "optimize" isn't added yet — no optimization search exists to call
-  # until module M11 (Drop 2, a later session).
+  # "ingest" queue: dataset uploads (M5), GIS layer loads (M4/BG-01), and
+  # report generation (M14/BG-07) — all file-producing/consuming work.
   worker-ingest:
     build: .
     command: celery -A app.workers.celery_app worker --loglevel=info --queues=ingest --concurrency=2
@@ -102,9 +105,11 @@ services:
       minio:
         condition: service_healthy
 
-  # "simulate" queue: BG-04, the 240-month engine run. A separate queue and
-  # worker from "ingest" (design AD-18) so a multi-second simulation never
-  # queues behind — or blocks — a file upload, and vice versa.
+  # "simulate" queue: BG-04, the 240-month engine run, and BG-06's
+  # sensitivity fan-out (M10, each sweep point is itself a simulation run).
+  # A separate queue and worker from "ingest" (design AD-18) so a
+  # multi-second simulation never queues behind — or blocks — a file
+  # upload, and vice versa.
   worker-simulate:
     build: .
     command: celery -A app.workers.celery_app worker --loglevel=info --queues=simulate --concurrency=2
@@ -127,6 +132,52 @@ services:
       redis:
         condition: service_healthy
       minio:
+        condition: service_healthy
+
+  # "optimize" queue: BG-05 (M11), a several-hundred-evaluation search — its
+  # own queue so it never delays a user's simulation or upload, and vice
+  # versa (design AD-18).
+  worker-optimize:
+    build: .
+    command: celery -A app.workers.celery_app worker --loglevel=info --queues=optimize --concurrency=1
+    environment:
+      DATABASE_URL: postgresql+asyncpg://swms:swms@db:5432/swms
+      JWT_SECRET: dev-only-secret-change-me
+      JWT_ALGORITHM: HS256
+      ENVIRONMENT: development
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: swms_minio
+      MINIO_SECRET_KEY: swms_minio_secret
+      MINIO_BUCKET: swms-uploads
+      MINIO_SECURE: "false"
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # Celery Beat: BG-08 (stuck-job janitor), BG-09 (expired-token cleanup),
+  # BG-10 (overlay cache warmer) — see app/workers/beat.py.
+  beat:
+    build: .
+    command: celery -A app.workers.celery_app beat --loglevel=info
+    environment:
+      DATABASE_URL: postgresql+asyncpg://swms:swms@db:5432/swms
+      JWT_SECRET: dev-only-secret-change-me
+      JWT_ALGORITHM: HS256
+      ENVIRONMENT: development
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - .:/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
 volumes:
