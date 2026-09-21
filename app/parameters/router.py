@@ -83,4 +83,61 @@ async def get_parameter_set(
     )
     out.categories = full["categories"]
     out.waste_baseline = full["waste_baseline"]
-    return {"success": True, "data": out}
+@router.get("/habitations/{habitation_id}/parameter-sets")
+async def list_parameter_sets_endpoint(
+    habitation_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_habitation_access(db, current_user, habitation_id, AccessLevel.VIEWER)
+    p_sets = await service.list_parameter_sets(db, habitation_id)
+    return {"success": True, "data": [ParameterSetOut.model_validate(ps) for ps in p_sets]}
+
+
+@router.get("/parameter-sets/{psid}/categories/{category}")
+async def get_category_endpoint(
+    psid: uuid.UUID,
+    category: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    ps = await service.get_parameter_set_or_404(db, psid)
+    await check_habitation_access(db, current_user, ps.habitation_id, AccessLevel.VIEWER)
+    data = await service.get_category_data(db, psid, category)
+    return {"success": True, "data": data}
+
+
+@router.get("/parameter-sets/{psid}/waste-baseline")
+async def get_waste_baseline_endpoint(
+    psid: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    ps = await service.get_parameter_set_or_404(db, psid)
+    await check_habitation_access(db, current_user, ps.habitation_id, AccessLevel.VIEWER)
+    data = await service.get_waste_baseline_data(db, psid)
+    return {"success": True, "data": data}
+
+
+@router.delete("/parameter-sets/{psid}")
+async def delete_parameter_set_endpoint(
+    psid: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await service.delete_parameter_set(db, psid, current_user)
+    await db.commit()
+    return {"success": True, "data": {"status": "deleted"}}
+
+
+@router.get("/habitations/{habitation_id}/parameters/history")
+async def get_parameter_history_endpoint(
+    habitation_id: uuid.UUID,
+    param: str,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_habitation_access(db, current_user, habitation_id, AccessLevel.VIEWER)
+    history = await service.get_parameter_history(db, habitation_id, param)
+    return {"success": True, "data": history}
+

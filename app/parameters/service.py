@@ -218,3 +218,79 @@ def _row_to_dict(row: Any, model: type) -> dict[str, Any]:
         for column in model.__table__.columns.keys()
         if column != "parameter_set_id"
     }
+
+
+async def list_parameter_sets(db: AsyncSession, habitation_id: uuid.UUID) -> list[ParameterSet]:
+    stmt = (
+        select(ParameterSet)
+        .where(ParameterSet.habitation_id == habitation_id)
+        .order_by(ParameterSet.version_no.desc())
+    )
+    result = await db.scalars(stmt)
+    return list(result)
+
+
+async def get_category_data(db: AsyncSession, psid: uuid.UUID, category: str) -> dict[str, Any]:
+    if category not in CATEGORY_MODELS:
+        raise AppError("CATEGORY_UNKNOWN", f"Unknown category '{category}'", 404)
+    await get_parameter_set_or_404(db, psid)
+    model = CATEGORY_MODELS[category]
+    row = await db.get(model, psid)
+    return _row_to_dict(row, model) if row else {}
+
+
+async def get_waste_baseline_data(db: AsyncSession, psid: uuid.UUID) -> dict[str, Any]:
+    await get_parameter_set_or_404(db, psid)
+    row = await db.get(WasteBaseline, psid)
+    return _row_to_dict(row, WasteBaseline) if row else {}
+
+
+async def delete_parameter_set(db: AsyncSession, psid: uuid.UUID, user: User) -> None:
+    ps = await get_parameter_set_or_404(db, psid)
+    if ps.status != ParameterSetStatus.DRAFT:
+        raise AppError("PARAMETER_SET_IMMUTABLE", "Only DRAFT parameter sets may be deleted", 409)
+    from app.core.deps import check_habitation_access
+    from app.habitation.models import AccessLevel
+    await check_habitation_access(db, user, ps.habitation_id, AccessLevel.OWNER)
+
+    # Delete category rows
+    for model in CATEGORY_MODELS.values():
+        row = await db.get(model, psid)
+        if row is not None:
+            await db.delete(row)
+    baseline = await db.get(WasteBaseline, psid)
+    if baseline is not None:
+        await db.delete(baseline)
+
+    await db.delete(ps)
+    await db.flush()
+
+
+async def get_parameter_history(
+    db: AsyncSession, habitation_id: uuid.UUID, param_path: str
+) -> list[dict[str, Any]]:
+    # param_path is formatted as 'category.param_key', e.g. 'demography.population'
+    if "." not in param_path:
+        raise AppError("INVALID_PARAM_PATH", "param query must be in format 'category.field'", 400)
+    category, field = param_path.split(".", 1)
+
+    model = WasteBaseline if category == "waste_baseline" else CATEGORY_MODELS.get(category)
+    if not model:
+        raise AppError("CATEGORY_UNKNOWN", f"Unknown category '{category}'", 404)
+
+    # Fetch all parameter sets for habitation
+    p_sets = await list_parameter_sets(db, habitation_id)
+    history = []
+    for ps in sorted(p_sets, key=lambda x: x.version_no):
+        row = await db.get(model, ps.id)
+        val = getattr(row, field, None) if row else None
+        history.append({
+            "version_no": ps.version_no,
+            "parameter_set_id": ps.id,
+            "status": ps.status.value,
+            "value": val,
+            "created_at": ps.created_at,
+            "created_by": ps.created_by,
+        })
+    return history
+

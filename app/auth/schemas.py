@@ -40,3 +40,16 @@ class TokenOut(BaseModel):
     refresh_token: str
     token_type: str = "bearer"
     expires_in: int
+
+
+class LogoutIn(BaseModel):
+    refresh_token: str | None = None
+
+
+class UserRoleUpdate(BaseModel):
+    role: UserRole
+
+
+class UserStatusUpdate(BaseModel):
+    is_active: bool
+

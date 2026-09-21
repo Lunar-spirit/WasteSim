@@ -132,3 +132,78 @@ async def commit_parameter_set(db: AsyncSession, psid: uuid.UUID) -> ParameterSe
 
     await db.flush()
     return ps
+
+
+async def get_validation_report_or_404(db: AsyncSession, report_id: uuid.UUID) -> ValidationReport:
+    report = await db.get(ValidationReport, report_id)
+    if report is None:
+        raise AppError("REPORT_NOT_FOUND", "Validation report not found", 404)
+    # Eagerly load issues
+    report.issues = list(await db.scalars(select(ValidationIssue).where(ValidationIssue.report_id == report.id)))
+    return report
+
+
+async def list_validation_issues(
+    db: AsyncSession,
+    report_id: uuid.UUID,
+    severity: str | None = None,
+    category: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[ValidationIssue]:
+    await get_validation_report_or_404(db, report_id)
+    stmt = select(ValidationIssue).where(ValidationIssue.report_id == report_id)
+    if severity:
+        stmt = stmt.where(ValidationIssue.severity == severity.upper())
+    if category:
+        stmt = stmt.where(ValidationIssue.category == category)
+    stmt = stmt.limit(limit).offset(offset)
+    result = await db.scalars(stmt)
+    return list(result)
+
+
+async def get_habitation_readiness(db: AsyncSession, habitation_id: uuid.UUID) -> dict[str, Any]:
+    from app.habitation.models import Habitation
+    habitation = await db.get(Habitation, habitation_id)
+    if habitation is None or habitation.deleted_at is not None:
+        raise AppError("HABITATION_NOT_FOUND", "Habitation not found", 404)
+
+    is_ready = habitation.status == HabitationStatus.READY
+    active_ps = habitation.active_parameter_set_id
+
+    missing_items = []
+    if not active_ps:
+        missing_items.append("No active validated parameter set committed")
+    if habitation.boundary is None:
+        missing_items.append("Habitation boundary geometry is missing")
+
+    latest_report = None
+    if active_ps:
+        report = await db.scalar(
+            select(ValidationReport)
+            .where(ValidationReport.parameter_set_id == active_ps)
+            .order_by(ValidationReport.created_at.desc())
+            .limit(1)
+        )
+        if report:
+            latest_report = {
+                "id": report.id,
+                "result": report.result.value,
+                "error_count": report.error_count,
+                "warning_count": report.warning_count,
+                "completeness_pct": report.completeness_pct,
+            }
+            if report.error_count > 0:
+                missing_items.append(f"{report.error_count} validation errors remaining")
+            if report.completeness_pct < 100:
+                missing_items.append(f"Completeness is only {report.completeness_pct}% (100% required)")
+
+    return {
+        "habitation_id": habitation.id,
+        "is_ready": is_ready,
+        "can_simulate": is_ready and len(missing_items) == 0,
+        "active_parameter_set_id": active_ps,
+        "latest_validation_report": latest_report,
+        "blocking_issues": missing_items,
+    }
+

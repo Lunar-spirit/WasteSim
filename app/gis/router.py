@@ -1,7 +1,9 @@
 import uuid
 
 from fastapi import APIRouter, Depends, Query, Response
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
+
 
 from app.auth.models import User
 from app.core.db import get_db
@@ -167,3 +169,31 @@ async def get_tile(
         media_type="application/vnd.mapbox-vector-tile",
         headers={"Cache-Control": "public, max-age=3600"},
     )
+
+
+@router.post("/api/v1/habitations/{habitation_id}/layers/import-osm", status_code=202)
+async def import_osm_endpoint(
+    habitation_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_habitation_access(db, current_user, habitation_id, AccessLevel.EDITOR)
+    result = await service.import_osm_for_habitation(db, habitation_id, current_user)
+    return {"success": True, "data": result}
+
+
+class GeocodeIn(BaseModel):
+    query: str
+
+
+@router.post("/api/v1/habitations/{habitation_id}/geocode")
+async def geocode_endpoint(
+    habitation_id: uuid.UUID,
+    payload: GeocodeIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    await check_habitation_access(db, current_user, habitation_id, AccessLevel.EDITOR)
+    result = await service.geocode_place(db, habitation_id, payload.query)
+    return {"success": True, "data": result}
+

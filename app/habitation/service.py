@@ -117,3 +117,153 @@ async def ensure_read_access(db: AsyncSession, user: User, habitation: Habitatio
     matrix); a DRAFT/ARCHIVED one needs at least VIEWER membership."""
     if habitation.status != HabitationStatus.READY:
         await check_habitation_access(db, user, habitation.id, AccessLevel.VIEWER)
+
+
+async def update_habitation(
+    db: AsyncSession, habitation_id: uuid.UUID, payload: Any, user: User
+) -> Habitation:
+    habitation = await get_habitation_or_404(db, habitation_id)
+    await check_habitation_access(db, user, habitation_id, AccessLevel.EDITOR)
+
+    if payload.name is not None:
+        habitation.name = payload.name
+    if payload.habitation_type is not None:
+        habitation.habitation_type = payload.habitation_type
+    if payload.state is not None:
+        habitation.state = payload.state
+    if payload.district is not None:
+        habitation.district = payload.district
+    if payload.country is not None:
+        habitation.country = payload.country
+    if payload.boundary_geojson is not None:
+        habitation.boundary = _valid_geography_expr(payload.boundary_geojson, "MULTIPOLYGON")
+    if payload.centroid_geojson is not None:
+        habitation.centroid = _valid_geography_expr(payload.centroid_geojson, "POINT")
+    if payload.area_sqkm is not None:
+        habitation.area_sqkm = payload.area_sqkm
+
+    await db.flush()
+    return habitation
+
+
+async def delete_habitation(db: AsyncSession, habitation_id: uuid.UUID, user: User) -> None:
+    if user.role != UserRole.ADMIN:
+        raise AppError("FORBIDDEN_ROLE", "Only an ADMIN may delete a habitation", 403)
+    habitation = await get_habitation_or_404(db, habitation_id)
+    from datetime import datetime, timezone
+    habitation.deleted_at = datetime.now(timezone.utc)
+    await db.flush()
+
+
+async def find_nearby_habitations(
+    db: AsyncSession, lat: float, lon: float, radius_km: float, user: User
+) -> list[Habitation]:
+    point_geom = func.ST_SetSRID(func.ST_MakePoint(lon, lat), 4326)
+    radius_meters = radius_km * 1000.0
+
+    stmt = select(Habitation).where(
+        Habitation.deleted_at.is_(None),
+        func.ST_DWithin(cast(Habitation.centroid, Geography(geometry_type="POINT", srid=4326)), cast(point_geom, Geography(geometry_type="POINT", srid=4326)), radius_meters),
+    )
+    result = await db.scalars(stmt)
+    habitations = list(result)
+    # Filter by read access
+    visible = []
+    for h in habitations:
+        try:
+            await ensure_read_access(db, user, h)
+            visible.append(h)
+        except AppError:
+            continue
+    return visible
+
+
+async def add_member(
+    db: AsyncSession, habitation_id: uuid.UUID, target_user_id: uuid.UUID, access_level_str: str, actor: User
+) -> HabitationMember:
+    await get_habitation_or_404(db, habitation_id)
+    await check_habitation_access(db, actor, habitation_id, AccessLevel.OWNER)
+
+    try:
+        level = AccessLevel(access_level_str.upper())
+    except ValueError:
+        raise AppError("INVALID_ACCESS_LEVEL", f"Access level must be OWNER, EDITOR, or VIEWER", 400)
+
+    existing = await db.scalar(
+        select(HabitationMember).where(
+            HabitationMember.habitation_id == habitation_id,
+            HabitationMember.user_id == target_user_id,
+        )
+    )
+    if existing is not None:
+        existing.access_level = level
+        member = existing
+    else:
+        member = HabitationMember(
+            habitation_id=habitation_id,
+            user_id=target_user_id,
+            access_level=level,
+        )
+        db.add(member)
+    await db.flush()
+    return member
+
+
+async def remove_member(
+    db: AsyncSession, habitation_id: uuid.UUID, target_user_id: uuid.UUID, actor: User
+) -> None:
+    await get_habitation_or_404(db, habitation_id)
+    await check_habitation_access(db, actor, habitation_id, AccessLevel.OWNER)
+
+    member = await db.scalar(
+        select(HabitationMember).where(
+            HabitationMember.habitation_id == habitation_id,
+            HabitationMember.user_id == target_user_id,
+        )
+    )
+    if member is not None:
+        await db.delete(member)
+        await db.flush()
+
+
+async def get_habitation_summary(
+    db: AsyncSession, habitation_id: uuid.UUID, user: User
+) -> dict[str, Any]:
+    from app.gis.models import GISLayer
+    from app.parameters.models import ParameterSet
+    from app.validation.models import ValidationReport
+
+    habitation = await get_habitation(db, habitation_id, user)
+
+    # Active parameter set
+    active_ps = None
+    if habitation.active_parameter_set_id:
+        ps = await db.get(ParameterSet, habitation.active_parameter_set_id)
+        if ps:
+            active_ps = {"id": ps.id, "version_no": ps.version_no, "status": ps.status.value}
+
+    # Layers
+    layers = await db.scalars(
+        select(GISLayer.layer_name).where(GISLayer.habitation_id == habitation_id)
+    )
+
+    # Latest validation report
+    latest_report = await db.scalar(
+        select(ValidationReport)
+        .where(ValidationReport.habitation_id == habitation_id)
+        .order_by(ValidationReport.created_at.desc())
+        .limit(1)
+    )
+    open_issues = (latest_report.error_count + latest_report.warning_count) if latest_report else 0
+
+    return {
+        "id": habitation.id,
+        "name": habitation.name,
+        "habitation_type": habitation.habitation_type.value,
+        "status": habitation.status.value,
+        "active_parameter_set": active_ps,
+        "layers": list(layers),
+        "open_issues_count": open_issues,
+        "latest_validation_result": latest_report.result.value if latest_report else None,
+    }
+

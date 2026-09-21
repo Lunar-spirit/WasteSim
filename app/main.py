@@ -6,7 +6,8 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
-from app.auth.router import router as auth_router
+from app.audit.router import router as audit_router
+from app.auth.router import router as auth_router, users_router
 from app.core.errors import register_exception_handlers
 from app.core.logging import RequestContextMiddleware
 from app.gis.router import router as gis_router
@@ -46,11 +47,14 @@ app.add_middleware(RequestContextMiddleware)
 register_exception_handlers(app)
 
 app.include_router(auth_router)
+app.include_router(users_router)
 app.include_router(habitation_router)
 app.include_router(parameters_router)
 app.include_router(validation_router)
 app.include_router(gis_router)
 app.include_router(ingestion_router)
+app.include_router(audit_router)
+
 
 
 @app.get("/health")

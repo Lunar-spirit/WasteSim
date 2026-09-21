@@ -72,3 +72,84 @@ async def rotate_refresh_token(db: AsyncSession, refresh_token: str) -> tuple[st
 
     stored.revoked_at = datetime.now(timezone.utc)
     return await issue_tokens(db, user)
+
+
+async def revoke_refresh_token(db: AsyncSession, refresh_token: str) -> None:
+    token_hash = hash_token(refresh_token)
+    stored = await db.scalar(select(RefreshToken).where(RefreshToken.token_hash == token_hash))
+    if stored is not None and stored.revoked_at is None:
+        stored.revoked_at = datetime.now(timezone.utc)
+
+
+async def revoke_all_user_tokens(db: AsyncSession, user_id: uuid.UUID) -> None:
+    tokens = await db.scalars(
+        select(RefreshToken).where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
+    )
+    now = datetime.now(timezone.utc)
+    for t in tokens:
+        t.revoked_at = now
+
+
+async def list_users(
+    db: AsyncSession,
+    role: UserRole | None = None,
+    is_active: bool | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> list[User]:
+    stmt = select(User).where(User.deleted_at.is_(None))
+    if role is not None:
+        stmt = stmt.where(User.role == role)
+    if is_active is not None:
+        stmt = stmt.where(User.is_active == is_active)
+    stmt = stmt.order_by(User.created_at.desc()).limit(limit).offset(offset)
+    result = await db.scalars(stmt)
+    return list(result)
+
+
+async def get_user_or_404(db: AsyncSession, user_id: uuid.UUID) -> User:
+    user = await db.get(User, user_id)
+    if user is None or user.deleted_at is not None:
+        raise AppError("USER_NOT_FOUND", "User not found", 404)
+    return user
+
+
+async def update_user_role(db: AsyncSession, user_id: uuid.UUID, new_role: UserRole, actor_id: uuid.UUID) -> User:
+    user = await get_user_or_404(db, user_id)
+    old_role = user.role.value
+    user.role = new_role
+    await db.flush()
+    return user
+
+
+async def update_user_status(db: AsyncSession, user_id: uuid.UUID, is_active: bool, actor_id: uuid.UUID) -> User:
+    user = await get_user_or_404(db, user_id)
+    user.is_active = is_active
+    if not is_active:
+        await revoke_all_user_tokens(db, user.id)
+    await db.flush()
+    return user
+
+
+async def get_user_habitations(db: AsyncSession, user_id: uuid.UUID) -> list[dict]:
+    from app.habitation.models import Habitation, HabitationMember
+
+    stmt = (
+        select(Habitation, HabitationMember.access_level)
+        .join(HabitationMember, Habitation.id == HabitationMember.habitation_id)
+        .where(HabitationMember.user_id == user_id, Habitation.deleted_at.is_(None))
+    )
+    rows = await db.execute(stmt)
+    habitations = []
+    for hab, access in rows:
+        habitations.append({
+            "id": hab.id,
+            "name": hab.name,
+            "habitation_type": hab.habitation_type.value,
+            "state": hab.state,
+            "district": hab.district,
+            "status": hab.status.value,
+            "access_level": access.value if access else None,
+        })
+    return habitations
+
