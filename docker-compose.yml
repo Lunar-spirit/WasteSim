@@ -67,6 +67,14 @@ services:
       # entirely on its deterministic keyword matcher — see .env.example.
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5-20251001}
+      # Automation module (auto-populate). All three are free public APIs —
+      # these defaults work with no key. Override only for a commercial
+      # tier or a self-hosted instance.
+      OPEN_METEO_API_URL: ${OPEN_METEO_API_URL:-https://archive-api.open-meteo.com/v1/archive}
+      OPEN_METEO_API_KEY: ${OPEN_METEO_API_KEY:-}
+      OVERPASS_API_URL: ${OVERPASS_API_URL:-https://overpass-api.de/api/interpreter}
+      OPEN_ELEVATION_API_URL: ${OPEN_ELEVATION_API_URL:-https://api.open-elevation.com/api/v1/lookup}
+      GEOCODING_API_URL: ${GEOCODING_API_URL:-https://nominatim.openstreetmap.org/search}
     ports:
       - "8000:8000"
     volumes:

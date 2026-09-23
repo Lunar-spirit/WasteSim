@@ -22,6 +22,8 @@ from typing import Any, Callable
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User, UserRole
+from app.automation.schemas import AutoPopulateIn
+from app.automation.service import auto_populate
 from app.budget.service import get_budget_summary
 from app.comparison.schemas import DEFAULT_COMPARISON_INDICATORS
 from app.core.deps import check_habitation_access
@@ -216,6 +218,20 @@ async def tool_create_optimization(db: AsyncSession, user: User, habitation_id: 
     return {"optimization_id": str(run.id), "job_id": task.id, "notes": notes}
 
 
+async def tool_auto_populate_habitation(
+    db: AsyncSession, user: User, habitation_id: uuid.UUID, parameter_set_id: str | None = None, **_: Any
+) -> dict[str, Any]:
+    """Wraps POST /habitations/{id}/auto-populate (the automation module) so
+    a user can ask the chatbot to fill in missing roads/rainfall/terrain
+    instead of calling the endpoint directly. Same EDITOR-level permission
+    check as every other write tool here — enforced inside
+    app.automation.service.auto_populate itself, not re-implemented here."""
+    payload = AutoPopulateIn(parameter_set_id=uuid.UUID(parameter_set_id) if parameter_set_id else None)
+    result = await auto_populate(db, habitation_id, payload, user)
+    await db.commit()
+    return result
+
+
 # Registry: tool_name -> (callable, is_write). A write tool commits its own
 # side effects internally (they're all 202-shaped background jobs); a read
 # tool only ever selects.
@@ -230,4 +246,5 @@ TOOL_REGISTRY: dict[str, tuple[Callable[..., Any], bool]] = {
     "create_scenario_run": (tool_create_scenario_run, True),
     "run_sensitivity": (tool_run_sensitivity, True),
     "create_optimization": (tool_create_optimization, True),
+    "auto_populate_habitation": (tool_auto_populate_habitation, True),
 }

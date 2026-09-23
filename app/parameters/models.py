@@ -202,6 +202,10 @@ class Demography(Base):
     annual_growth_rate_pct: Mapped[float | None] = mapped_column(Numeric(6, 3), nullable=True)
     household_size_avg: Mapped[float | None] = mapped_column(Numeric(6, 2), nullable=True)
     floating_population_pct: Mapped[float | None] = mapped_column(Numeric(6, 3), nullable=True)
+    # Migration 0014 (automation module): derivable as
+    # population / household_size_avg, but also directly settable like any
+    # other category field.
+    household_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
 
 class CommunityInfrastructure(Base):
@@ -249,6 +253,11 @@ class Terrain(Base):
     soil_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     flood_risk_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
     landslide_risk_level: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    # Migration 0014 (automation module): outputs of the elevation-grid
+    # terrain classification — COASTAL_PLAINS / HILLY / PLAINS, and the
+    # setback distance that applies when it's COASTAL_PLAINS.
+    terrain_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    coastal_buffer_zone_meters: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
 
 
 class EconomicConditions(Base):

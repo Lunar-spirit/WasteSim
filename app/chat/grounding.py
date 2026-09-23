@@ -90,6 +90,21 @@ def build_grounded_answer(tool_name: str, run_id: str | None, arguments: dict[st
         sentences.append(f"Started — id {new_id}, job {job_id}. Poll its status endpoint for the result.")
         citations.append({"job_id": job_id})
 
+    elif tool_name == "auto_populate_habitation":
+        automated = result.get("automated_categories", [])
+        skipped = result.get("skipped_categories", [])
+        derived = result.get("derived_fields", [])
+        sentences.append(
+            f"Auto-populated {len(automated)} field(s) on parameter set {result.get('parameter_set_id')}"
+            + (f", derived {len(derived)} more from what was already there" if derived else "")
+            + (f"; {len(skipped)} skipped ({', '.join(s['category'] for s in skipped)})" if skipped else "")
+            + "."
+        )
+        for field in automated:
+            citations.append({"parameter_set_id": result.get("parameter_set_id"), "field": field})
+        for field in derived:
+            citations.append({"parameter_set_id": result.get("parameter_set_id"), "field": field, "derived": True})
+
     else:
         sentences.append("Done.")
 

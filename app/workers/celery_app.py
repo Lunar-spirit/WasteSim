@@ -5,6 +5,7 @@ design AD-18).
 """
 
 from celery import Celery
+from kombu import Queue
 
 from app.core.config import settings
 
@@ -48,6 +49,13 @@ celery_app = Celery(
 )
 
 celery_app.conf.update(
+    task_queues=[
+        Queue("celery"),
+        Queue("simulate"),
+        Queue("ingest"),
+        Queue("optimize"),
+    ],
+    worker_pool="solo",
     task_routes={
         "app.workers.tasks_ingest.*": {"queue": "ingest"},
         "app.workers.tasks_gis.*": {"queue": "ingest"},

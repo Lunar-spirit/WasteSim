@@ -41,8 +41,18 @@ def _geometry_expr(geometry_geojson: dict):
 # async, file-based path (source=UPLOAD, API-34 with target=GIS_LAYER).
 # ---------------------------------------------------------------------------
 async def create_manual_layer(
-    db: AsyncSession, habitation_id: uuid.UUID, payload: LayerUploadIn, user: User
+    db: AsyncSession,
+    habitation_id: uuid.UUID,
+    payload: LayerUploadIn,
+    user: User,
+    source: LayerSource = LayerSource.MANUAL_DRAW,
 ) -> GISLayer:
+    """Synchronous, geometry-already-in-hand layer creation. `source`
+    defaults to MANUAL_DRAW (the original caller, API-33's POST
+    /habitations/{id}/layers) but the automation module (app/automation/
+    service.py) passes LayerSource.OSM_OVERPASS for a layer it built from a
+    live Overpass query, so it's labelled correctly rather than lying about
+    where the geometry came from."""
     await _get_habitation_or_404(db, habitation_id)
 
     features = payload.geojson.get("features")
@@ -58,7 +68,7 @@ async def create_manual_layer(
         layer_name=payload.layer_name,
         layer_type=payload.layer_type,
         geometry_type=first_geom_type,
-        source=LayerSource.MANUAL_DRAW,
+        source=source,
         status=LayerStatus.PROCESSING,
         created_by=user.id,
     )

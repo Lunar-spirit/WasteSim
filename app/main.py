@@ -9,6 +9,7 @@ from slowapi.util import get_remote_address
 
 from app.audit.router import router as audit_router
 from app.auth.router import router as auth_router
+from app.automation.router import router as automation_router
 from app.budget.router import router as budget_router
 from app.chat.router import router as chat_router
 from app.comparison.router import router as comparison_router
@@ -70,6 +71,7 @@ app.include_router(comparison_router)
 app.include_router(reports_router)
 app.include_router(chat_router)
 app.include_router(audit_router)
+app.include_router(automation_router)
 
 
 @app.get("/health")

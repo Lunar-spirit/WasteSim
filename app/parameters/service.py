@@ -191,6 +191,41 @@ async def upsert_waste_baseline(db: AsyncSession, psid: uuid.UUID, payload: dict
     return row
 
 
+async def derive_semi_automated_fields(db: AsyncSession, psid: uuid.UUID) -> list[str]:
+    """Semi-automated formulations (automation module): fills in a target
+    field from ones already present, but ONLY when the target is still
+    missing — never overwrites a value a planner or an upload explicitly
+    supplied. Called from two places: app/ingestion/service.py's
+    ingest_accepted_rows (API-37 — "seamlessly on ingest") and
+    app/automation/service.py's auto_populate, so the same two formulas
+    apply consistently regardless of which path a habitation's data came
+    in through. Writes through upsert_category/upsert_waste_baseline like
+    every other mutation, so the 409 PARAMETER_SET_IMMUTABLE guard and the
+    immutability trigger both still apply."""
+    full = await get_parameter_set_full(db, psid)
+    demography = full["categories"].get("demography") or {}
+    industrial = full["categories"].get("industrial_activities") or {}
+    baseline = full["waste_baseline"] or {}
+
+    derived: list[str] = []
+
+    population = demography.get("population")
+    household_size_avg = demography.get("household_size_avg")
+    if population and household_size_avg and not demography.get("household_count"):
+        household_count = round(float(population) / float(household_size_avg))
+        await upsert_category(db, psid, "demography", {"household_count": household_count})
+        derived.append("demography.household_count")
+
+    per_capita = baseline.get("per_capita_generation_kg_day")
+    if population and per_capita and not baseline.get("total_generation_tpd"):
+        industrial_waste_tpd = industrial.get("industrial_waste_tpd") or 0.0
+        total_generation_tpd = round((float(population) * float(per_capita)) / 1000.0 + float(industrial_waste_tpd), 3)
+        await upsert_waste_baseline(db, psid, {"total_generation_tpd": total_generation_tpd})
+        derived.append("waste_baseline.total_generation_tpd")
+
+    return derived
+
+
 async def get_parameter_set_full(db: AsyncSession, psid: uuid.UUID) -> dict[str, Any]:
     ps = await get_parameter_set_or_404(db, psid)
 

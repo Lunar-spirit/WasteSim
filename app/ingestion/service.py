@@ -15,7 +15,12 @@ from app.habitation.service import get_habitation_or_404
 from app.ingestion.models import EXTENSION_TO_FORMAT, DatasetUpload, FileFormat, UploadStatus, UploadTarget
 from app.ingestion.parsers import ParseError, parse_rows
 from app.parameters.models import ParameterDefinition
-from app.parameters.service import get_parameter_set_or_404, upsert_category, upsert_waste_baseline
+from app.parameters.service import (
+    derive_semi_automated_fields,
+    get_parameter_set_or_404,
+    upsert_category,
+    upsert_waste_baseline,
+)
 from app.validation.models import Severity, ValidationIssue, ValidationReport, ValidationResult, ValidationScope
 from app.validation.pipeline import Issue, PipelineResult, validate_and_normalize_field
 
@@ -299,6 +304,12 @@ async def ingest_accepted_rows(db: AsyncSession, upload: DatasetUpload) -> Any:
             await upsert_waste_baseline(db, ps.id, payload)
         else:
             await upsert_category(db, ps.id, category, payload)
+
+    # Semi-automated formulations (automation module): fills household_count
+    # / total_generation_tpd from what this upload just supplied, when the
+    # target itself wasn't one of the ingested columns and the fields it's
+    # derived from are now present.
+    await derive_semi_automated_fields(db, ps.id)
 
     upload.status = UploadStatus.INGESTED
     await db.flush()

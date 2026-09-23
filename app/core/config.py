@@ -31,5 +31,16 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-haiku-4-5-20251001"
 
+    # EXT-01/EXT-03 (automation module): all three default to the free,
+    # keyless public endpoints, so auto-populate works out of the box.
+    # Override with a commercial/high-rate-tier URL or add an API key in
+    # .env without any code change — app/automation/service.py reads these
+    # settings, never a hardcoded URL.
+    open_meteo_api_url: str = "https://archive-api.open-meteo.com/v1/archive"
+    open_meteo_api_key: str | None = None
+    overpass_api_url: str = "https://overpass-api.de/api/interpreter"
+    open_elevation_api_url: str = "https://api.open-elevation.com/api/v1/lookup"
+    geocoding_api_url: str = "https://nominatim.openstreetmap.org/search"
+
 
 settings = Settings()

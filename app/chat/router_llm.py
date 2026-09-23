@@ -97,11 +97,17 @@ TOOL_SCHEMA: list[dict[str, Any]] = [
             "required": ["objectives"],
         },
     },
+    {
+        "name": "auto_populate_habitation",
+        "description": "Fill in missing roads, rainfall and terrain data for this habitation from live public data sources (write).",
+        "input_schema": {"type": "object", "properties": {"parameter_set_id": {"type": "string"}}},
+    },
 ]
 
 # keyword -> tool name, checked in order (first match wins). Deliberately
 # simple: this is the offline fallback, not a substitute for a real model.
 _KEYWORD_RULES: list[tuple[re.Pattern, str]] = [
+    (re.compile(r"\bauto.?populat|\bautofill|\bfill in\b|\bfetch (the )?(road|rainfall|terrain|elevation)", re.I), "auto_populate_habitation"),
     (re.compile(r"\bbudget\b|\bcost\b|\bopex\b|\bcapex\b|\bnpv\b", re.I), "get_budget"),
     (re.compile(r"\bfinding|\bexhaust|\bshortfall|\bsaturat", re.I), "get_run_findings"),
     (re.compile(r"\bcompare\b|\bcomparison\b|\bversus\b|\bvs\.?\b", re.I), "compare_runs"),
