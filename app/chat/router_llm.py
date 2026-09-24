@@ -109,7 +109,7 @@ TOOL_SCHEMA: list[dict[str, Any]] = [
 _KEYWORD_RULES: list[tuple[re.Pattern, str]] = [
     (re.compile(r"\bauto.?populat|\bautofill|\bfill in\b|\bfetch (the )?(road|rainfall|terrain|elevation)", re.I), "auto_populate_habitation"),
     (re.compile(r"\bbudget\b|\bcost\b|\bopex\b|\bcapex\b|\bnpv\b", re.I), "get_budget"),
-    (re.compile(r"\bfinding|\bexhaust|\bshortfall|\bsaturat", re.I), "get_run_findings"),
+    (re.compile(r"\bfinding|\bexhaust|\bshortfall|\bshortage|\bvehicle|\bsaturat", re.I), "get_run_findings"),
     (re.compile(r"\bcompare\b|\bcomparison\b|\bversus\b|\bvs\.?\b", re.I), "compare_runs"),
     (re.compile(r"\bdiffer|\bdiverg", re.I), "explain_difference"),
     (re.compile(r"\boptimi[sz]e|\boptimization|\bbest plan\b", re.I), "create_optimization"),

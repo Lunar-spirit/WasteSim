@@ -21,6 +21,7 @@ is free to import ORM models and other app/ services.
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import uuid
 from datetime import date, timedelta
@@ -53,7 +54,7 @@ from app.parameters.service import (
     upsert_category,
 )
 
-EXTERNAL_TIMEOUT_SECONDS = 95.0
+EXTERNAL_TIMEOUT_SECONDS = 15.0  # per spec: "concurrent 15s-timeout tasks and graceful degradation"
 ELEVATION_GRID_SIZE = 3  # 3x3 = 9 sample points, per the brief
 COASTAL_MAX_ELEVATION_M = 5.0
 HILLY_SLOPE_THRESHOLD_PCT = 8.0
@@ -123,16 +124,50 @@ def _polygon_ring_for_overpass(boundary_geojson: dict[str, Any]) -> str:
     return " ".join(f"{lat} {lon}" for lon, lat in ring)
 
 
-async def _fetch_road_network(client: httpx.AsyncClient, boundary_geojson: dict[str, Any]) -> dict[str, Any]:
+def _fetch_road_network_sync(boundary_geojson: dict[str, Any], timeout: float) -> dict[str, Any]:
+    """Synchronous core of the road-network fetch — run in a worker thread by
+    _fetch_road_network below, not awaited directly against an async client
+    like every other fetch in this module.
+
+    Found live, reproducibly: the free Overpass mirror this deployment's
+    .env points at (overpass.kumi.systems) can accept a connection and the
+    full POST body, then simply never send a response or close the socket.
+    That failure mode defeated every purely-async bound tried against it —
+    httpx.AsyncClient's own configured timeout, asyncio.wait(timeout=...)
+    around the task, and asyncio.wait_for(...) around the whole coroutine —
+    all of which ultimately still have to `await` something that depends on
+    the stuck connection eventually yielding control back (whether that's
+    the read itself, or a cleanup path like client.aclose() called on a
+    client with a read in flight). A worker thread sidesteps this
+    completely: _fetch_road_network wraps this call in
+    asyncio.wait_for(loop.run_in_executor(...)), which returns to the caller
+    on schedule regardless of whether this thread ever finishes, because it
+    never has to wait for the thread — only observe whether it finished in
+    time. The abandoned thread (and its socket) cleans itself up once the OS
+    finally times out or resets the underlying connection; we just stop
+    waiting for confirmation that it did.
+    """
     poly = _polygon_ring_for_overpass(boundary_geojson)
+    # The Overpass QL's own [timeout:N] tells the SERVER how long it may
+    # keep working, independent of any HTTP-client-side timeout — the
+    # actual root cause of a real, reproducible multi-minute hang found
+    # while building this module: with this set to 60 (well past
+    # EXTERNAL_TIMEOUT_SECONDS), a genuinely slow query gets a well-behaved
+    # server's full cooperation to keep running — and to keep the
+    # connection alive while it does — for up to 60 seconds, regardless of
+    # what the client intended. Keeping it strictly below
+    # EXTERNAL_TIMEOUT_SECONDS means the SERVER gives up and sends a clean
+    # error first, before the client-side timeout would otherwise have to.
+    overpass_budget = max(5, int(timeout) - 3)
     query = (
-        "[out:json][timeout:60];"
+        f"[out:json][timeout:{overpass_budget}];"
         f'way["highway"~"^(primary|secondary|tertiary|residential|service|unclassified)$"](poly:"{poly}");'
         "out body; >; out skel qt;"
     )
-    response = await client.post(settings.overpass_api_url, data={"data": query})
-    response.raise_for_status()
-    data = response.json()
+    with httpx.Client(timeout=timeout, headers=_REQUEST_HEADERS) as client:
+        response = client.post(settings.overpass_api_url, data={"data": query})
+        response.raise_for_status()
+        data = response.json()
 
     nodes: dict[int, tuple[float, float]] = {}
     ways: list[list[int]] = []
@@ -174,6 +209,18 @@ async def _fetch_road_network(client: httpx.AsyncClient, boundary_geojson: dict[
     ]
 
     return {"road_network_km": round(total_length_m / 1000.0, 3), "geojson_features": features}
+
+
+async def _fetch_road_network(boundary_geojson: dict[str, Any], timeout: float) -> dict[str, Any]:
+    """Async shim around _fetch_road_network_sync — see that function's
+    docstring for why this dispatches to a worker thread instead of using an
+    async httpx client the way every other fetch in this module does."""
+    loop = asyncio.get_running_loop()
+    fn = functools.partial(_fetch_road_network_sync, boundary_geojson, timeout)
+    # +2s over the thread's own httpx timeout: gives the thread a fair
+    # chance to hit its own timeout and return cleanly first; if it doesn't,
+    # we give up anyway rather than trust it to.
+    return await asyncio.wait_for(loop.run_in_executor(None, fn), timeout=timeout + 2.0)
 
 
 # ---------------------------------------------------------------------------
@@ -326,13 +373,55 @@ async def auto_populate(db: AsyncSession, habitation_id: uuid.UUID, payload: Any
     derived_fields: list[str] = []
     gis_layer_id: str | None = None
 
-    async with httpx.AsyncClient(timeout=EXTERNAL_TIMEOUT_SECONDS, headers=_REQUEST_HEADERS, verify=False) as client:
-        road_result, rainfall_result, terrain_result = await asyncio.gather(
-            asyncio.wait_for(_fetch_road_network(client, boundary_geojson), timeout=EXTERNAL_TIMEOUT_SECONDS),
-            asyncio.wait_for(_fetch_annual_rainfall(client, lat, lon), timeout=EXTERNAL_TIMEOUT_SECONDS),
-            asyncio.wait_for(_fetch_terrain(client, bbox), timeout=EXTERNAL_TIMEOUT_SECONDS),
-            return_exceptions=True,
-        )
+    # verify=True (the default) — never disable TLS certificate verification
+    # even for a known-broken host (Open-Elevation's cert is expired): that
+    # failure is exactly what _skip_reason()/skipped_categories exists to
+    # report cleanly, not something to route around by trusting bad certs.
+    #
+    # Rainfall and terrain use an async httpx client bounded by
+    # asyncio.wait(timeout=...) — proven reliable in practice for both.
+    # Roads uses a completely different mechanism (see _fetch_road_network's
+    # docstring): the free Overpass mirror this deployment's .env points at
+    # (overpass.kumi.systems) was found, live and reproducibly, to
+    # occasionally accept a connection and the request body and then never
+    # send a response or close the socket — a failure mode that defeated
+    # every purely-async bound tried against it, because each one still had
+    # to *await* something (a read, or a cleanup path like client.aclose())
+    # that depended on the stuck connection eventually yielding control
+    # back. _fetch_road_network instead runs the whole call in a worker
+    # thread via asyncio.wait_for(loop.run_in_executor(...)), which returns
+    # to this caller on schedule regardless of whether that thread ever
+    # finishes.
+    async def _run_bounded(coro_factory, timeout: float) -> Any:
+        client = httpx.AsyncClient(timeout=EXTERNAL_TIMEOUT_SECONDS, headers=_REQUEST_HEADERS)
+        task = asyncio.ensure_future(coro_factory(client))
+        try:
+            done, _pending = await asyncio.wait({task}, timeout=timeout)
+            if task in done:
+                result = task.result()
+                if not client.is_closed:
+                    asyncio.ensure_future(client.aclose())
+                return result
+            task.cancel()
+            if not client.is_closed:
+                asyncio.ensure_future(client.aclose())
+            return TimeoutError(f"no response within {timeout:.0f}s")
+        except Exception as exc:  # noqa: BLE001 - reported via skipped_categories, not raised
+            if not client.is_closed:
+                asyncio.ensure_future(client.aclose())
+            return exc
+
+    async def _run_road_bounded() -> Any:
+        try:
+            return await _fetch_road_network(boundary_geojson, EXTERNAL_TIMEOUT_SECONDS)
+        except Exception as exc:  # noqa: BLE001 - reported via skipped_categories, not raised
+            return exc
+
+    road_result, rainfall_result, terrain_result = await asyncio.gather(
+        _run_road_bounded(),
+        _run_bounded(lambda c: _fetch_annual_rainfall(c, lat, lon), EXTERNAL_TIMEOUT_SECONDS),
+        _run_bounded(lambda c: _fetch_terrain(c, bbox), EXTERNAL_TIMEOUT_SECONDS),
+    )
 
     # --- 1. Roads --------------------------------------------------------
     if isinstance(road_result, BaseException):

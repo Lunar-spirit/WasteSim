@@ -15,7 +15,7 @@ from typing import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, WorkerSessionLocal
 from app.optimization.models import AnalysisStatus, OptimizationRun
 from app.optimization.service import run_search
 from app.workers.celery_app import celery_app
@@ -44,4 +44,4 @@ async def run_optimization(
 
 @celery_app.task(bind=True, max_retries=0, name="app.workers.tasks_optimize.optimize")
 def optimize(self, optimization_id: str) -> None:
-    asyncio.run(run_optimization(optimization_id))
+    asyncio.run(run_optimization(optimization_id, session_factory=WorkerSessionLocal))

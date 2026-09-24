@@ -18,7 +18,7 @@ from typing import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, WorkerSessionLocal
 from app.ingestion.models import DatasetUpload, UploadStatus
 from app.ingestion.service import validate_upload_rows
 from app.workers.celery_app import celery_app
@@ -62,7 +62,7 @@ async def run_ingest_tabular_upload(
 @celery_app.task(bind=True, max_retries=3, name="app.workers.tasks_ingest.ingest_tabular_upload")
 def ingest_tabular_upload(self, upload_id: str) -> None:
     try:
-        asyncio.run(run_ingest_tabular_upload(upload_id))
+        asyncio.run(run_ingest_tabular_upload(upload_id, session_factory=WorkerSessionLocal))
     except Exception as exc:
         if self.request.retries >= self.max_retries:
             # Final failure already recorded FAILED status inside

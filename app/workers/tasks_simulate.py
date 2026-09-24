@@ -15,7 +15,7 @@ from typing import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, WorkerSessionLocal
 from app.engine.invariants import MassBalanceError
 from app.simulation.models import RunStatus, SimulationRun
 from app.simulation.service import execute_run
@@ -61,4 +61,7 @@ def simulate(self, run_id: str) -> None:
     # No automatic retry: a run that fails (a mass-balance violation, a bad
     # override slipping past validation) failed because of its inputs, not
     # a transient infra hiccup — retrying would just fail again identically.
-    asyncio.run(run_simulation(run_id))
+    # WorkerSessionLocal (NullPool), not the app's pooled AsyncSessionLocal —
+    # a worker process runs many tasks over its life, each via its own fresh
+    # asyncio.run() event loop; see app/core/db.py's WorkerSessionLocal docstring.
+    asyncio.run(run_simulation(run_id, session_factory=WorkerSessionLocal))

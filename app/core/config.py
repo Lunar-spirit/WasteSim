@@ -23,6 +23,14 @@ class Settings(BaseSettings):
 
     max_upload_size_bytes: int = 50 * 1024 * 1024  # 50 MB, PDD-11
 
+    # Section 7.3's own Security Controls row ("CORS restricted to known
+    # frontend origins") was never actually wired to a CORSMiddleware in
+    # app/main.py until the frontend (frontend/) needed it — every request
+    # from a browser page on a different origin/port (Vite's dev server,
+    # 5173) was failing outright with no CORS headers at all. Comma-separated
+    # (not a JSON list) so it's a plain, easy .env value; split in main.py.
+    cors_allowed_origins: str = "http://localhost:5173,http://127.0.0.1:5173"
+
     # EXT-05 (LLM provider): optional by design. None (the default, and
     # .env.example's placeholder) means module M15's deterministic
     # keyword/regex matcher answers every question instead — the feature

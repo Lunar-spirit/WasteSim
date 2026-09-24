@@ -15,7 +15,7 @@ from typing import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, WorkerSessionLocal
 from app.optimization.models import AnalysisStatus
 from app.sensitivity.models import SensitivityAnalysis
 from app.sensitivity.service import run_sweep
@@ -42,4 +42,4 @@ async def run_sweep_task(
 
 @celery_app.task(bind=True, max_retries=0, name="app.workers.tasks_sensitivity.sweep")
 def sweep(self, analysis_id: str) -> None:
-    asyncio.run(run_sweep_task(analysis_id))
+    asyncio.run(run_sweep_task(analysis_id, session_factory=WorkerSessionLocal))

@@ -9,7 +9,7 @@ from typing import Callable
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, WorkerSessionLocal
 from app.reports.models import Report, ReportStatus
 from app.reports.service import generate_report
 from app.workers.celery_app import celery_app
@@ -38,5 +38,6 @@ async def run_report_generation(
 
 @celery_app.task(bind=True, max_retries=2, name="app.workers.tasks_reports.generate")
 def generate(self, report_id: str) -> None:
-    # 2 retries, matching BG-07's own stated failure policy.
-    asyncio.run(run_report_generation(report_id))
+    # 2 retries, matching BG-07's own stated failure policy. WorkerSessionLocal
+    # (NullPool), not the app's pooled AsyncSessionLocal — see app/core/db.py.
+    asyncio.run(run_report_generation(report_id, session_factory=WorkerSessionLocal))

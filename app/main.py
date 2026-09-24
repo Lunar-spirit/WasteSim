@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 import structlog
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
@@ -13,6 +14,7 @@ from app.automation.router import router as automation_router
 from app.budget.router import router as budget_router
 from app.chat.router import router as chat_router
 from app.comparison.router import router as comparison_router
+from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import RequestContextMiddleware
 from app.gis.router import router as gis_router
@@ -53,6 +55,16 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 app.add_middleware(RequestContextMiddleware)
+# Added last so it wraps outermost (Starlette applies middleware in reverse
+# registration order) — CORS preflight (OPTIONS) and headers on every
+# response, including error responses from the other middleware/handlers.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[origin.strip() for origin in settings.cors_allowed_origins.split(",") if origin.strip()],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 register_exception_handlers(app)
 

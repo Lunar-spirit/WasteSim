@@ -18,7 +18,7 @@ from typing import Callable
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, WorkerSessionLocal
 from app.optimization.models import AnalysisStatus, OptimizationRun
 from app.reports.models import Report, ReportStatus
 from app.sensitivity.models import SensitivityAnalysis
@@ -91,7 +91,7 @@ async def run_janitor_sweep(session_factory: Callable[[], AsyncSession] = AsyncS
 def janitor_sweep() -> dict[str, int]:
     import asyncio
 
-    return asyncio.run(run_janitor_sweep())
+    return asyncio.run(run_janitor_sweep(session_factory=WorkerSessionLocal))
 
 
 celery_app.conf.beat_schedule = {

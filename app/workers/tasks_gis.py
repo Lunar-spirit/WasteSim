@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core import storage
-from app.core.db import AsyncSessionLocal
+from app.core.db import AsyncSessionLocal, WorkerSessionLocal
 from app.gis.models import GISLayer, LayerStatus
 from app.gis.service import process_gis_file_upload
 from app.ingestion.models import DatasetUpload, UploadStatus
@@ -66,7 +66,7 @@ async def run_ingest_gis_layer(
 @celery_app.task(bind=True, max_retries=3, name="app.workers.tasks_gis.ingest_gis_layer")
 def ingest_gis_layer(self, upload_id: str) -> None:
     try:
-        asyncio.run(run_ingest_gis_layer(upload_id))
+        asyncio.run(run_ingest_gis_layer(upload_id, session_factory=WorkerSessionLocal))
     except Exception as exc:
         if self.request.retries >= self.max_retries:
             raise
