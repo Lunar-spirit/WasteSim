@@ -51,6 +51,17 @@ export interface Habitation {
   created_at: string
 }
 
+export interface HabitationCreatePayload {
+  name: string
+  habitation_type: HabitationType
+  state: string
+  district: string
+  country?: string
+  centroid_geojson?: Record<string, unknown> | null
+  boundary_geojson?: Record<string, unknown> | null
+  area_sqkm?: number | null
+}
+
 // --- Simulation runs ---------------------------------------------------------
 
 export type RunStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | 'CANCELLED'
@@ -207,4 +218,292 @@ export interface ChatMessage {
   citations: ChatCitation[]
   latency_ms: number | null
   created_at: string
+}
+
+// --- Parameters ----------------------------------------------------------
+
+export type ParameterSetStatus = 'DRAFT' | 'VALIDATING' | 'VALIDATED' | 'INVALID' | 'ARCHIVED'
+
+export interface ParameterDefinition {
+  category: string
+  param_key: string
+  display_label: string
+  unit: string | null
+  data_type: string
+  min_value: number | null
+  max_value: number | null
+  is_required: boolean
+  normalization_rule: string | null
+}
+
+export interface ParameterSet {
+  id: string
+  habitation_id: string
+  version_no: number
+  status: ParameterSetStatus
+  cloned_from_id: string | null
+  change_note: string | null
+  created_by: string
+  created_at: string
+}
+
+export interface ParameterSetDetail extends ParameterSet {
+  categories: Record<string, Record<string, unknown>>
+  waste_baseline: Record<string, unknown> | null
+}
+
+export interface ValidationIssue {
+  code: string
+  severity: string
+  category: string | null
+  field: string | null
+  message: string
+  [key: string]: unknown
+}
+
+export interface ValidationReport {
+  report_id: string
+  scope: string
+  result: 'PASS' | 'FAIL'
+  error_count: number
+  warning_count: number
+  completeness_pct: number
+  completeness_by_category: Record<string, number>
+  rules_version: string
+  issues: ValidationIssue[]
+}
+
+export interface CommitResult {
+  id: string
+  version_no: number
+  status: ParameterSetStatus
+}
+
+// --- GIS layers (CRUD) -----------------------------------------------------
+
+export interface GISLayer {
+  id: string
+  habitation_id: string
+  layer_name: string
+  layer_type: LayerType
+  geometry_type: string
+  source: string
+  source_ref: string | null
+  status: 'PROCESSING' | 'READY' | 'FAILED'
+  is_visible_default: boolean
+  z_index: number
+  style: Record<string, unknown>
+  feature_count: number
+  total_length_km: number | null
+  srid_original: number | null
+  created_by: string
+  created_at: string
+  updated_at: string
+}
+
+// --- Simulation extras -----------------------------------------------------
+
+export interface RunFinding {
+  code: string
+  severity: string
+  numeric_value: number | null
+  year_index: number | null
+  message: string
+}
+
+export type BudgetKind = 'CAPEX' | 'OPEX'
+export type BudgetCategory =
+  | 'COLLECTION'
+  | 'TRANSPORT'
+  | 'TREATMENT'
+  | 'DISPOSAL'
+  | 'FLEET_PURCHASE'
+  | 'INFRASTRUCTURE'
+  | 'ADMIN'
+  | 'AWARENESS'
+
+export interface BudgetLine {
+  year_index: number
+  kind: BudgetKind
+  category: BudgetCategory
+  amount_inr: number
+  discounted_inr: number
+  note: string | null
+}
+
+export interface BudgetSummary {
+  run_id: string
+  total_opex_inr: number
+  total_capex_inr: number
+  total_cost_inr: number
+  npv_total_cost_inr: number
+  by_category: Record<string, number>
+}
+
+// --- Scenario --------------------------------------------------------------
+
+export type EventType =
+  | 'FLOOD'
+  | 'LANDSLIDE'
+  | 'HEAVY_MONSOON'
+  | 'ROAD_BLOCKAGE'
+  | 'POPULATION_SURGE'
+  | 'VEHICLE_BREAKDOWN'
+  | 'TREATMENT_PLANT_OUTAGE'
+  | 'FESTIVAL'
+  | 'STRIKE'
+
+export interface EventCatalogueItem {
+  event_type: string
+  effect: string
+  magnitude_source: string
+}
+
+export interface EventIn {
+  event_type: EventType
+  start_month: number
+  duration_months: number
+  recovery_months: number
+  severity: 'MILD' | 'MODERATE' | 'SEVERE'
+  affected_area?: Record<string, unknown> | null
+  impact_params?: Record<string, unknown>
+}
+
+export interface ScenarioEvent {
+  id: string
+  event_type: EventType
+  start_month: number
+  duration_months: number
+  recovery_months: number
+  severity: string
+  impact_params: Record<string, unknown>
+  derived_impacts: Record<string, unknown>
+  created_at: string
+}
+
+export interface ImpactPreview {
+  derived: boolean
+  message?: string
+  derived_impacts?: Record<string, unknown>
+}
+
+// --- Sensitivity -------------------------------------------------------------
+
+export type AnalysisStatus = 'QUEUED' | 'RUNNING' | 'COMPLETED' | 'FAILED'
+
+export interface SensitivityPoint {
+  id: number
+  swept_value: number
+  child_run_id: string | null
+  indicator_values: Record<string, number>
+  elasticity: Record<string, number> | null
+  error: string | null
+}
+
+export interface SensitivityAnalysis {
+  id: string
+  habitation_id: string
+  base_run_id: string
+  param_path: string
+  swept_values: number[]
+  indicators: string[]
+  status: AnalysisStatus
+  created_at: string
+  completed_at: string | null
+  job_id?: string
+  points?: SensitivityPoint[]
+}
+
+// Ranked by how much the one swept parameter moves each indicator (API-65)
+// — NOT one bar per parameter; this analysis only ever sweeps one.
+export interface TornadoRow {
+  indicator: string
+  min_value: number
+  max_value: number
+  range: number
+  max_abs_elasticity: number | null
+}
+
+// --- Optimization ------------------------------------------------------------
+
+export type OptObjective = 'MIN_COST' | 'MIN_LANDFILL' | 'MAX_COVERAGE' | 'MAX_RECOVERY' | 'MIN_GHG' | 'MAX_RESILIENCE'
+
+// The POST .../optimizations response shape (app/optimization/router.py's
+// create_optimization) — deliberately NOT the same shape as GET
+// .../optimizations/{id} (OptimizationRunOut): it uses "optimization_id",
+// not "id", and doesn't return every OptimizationRunOut field.
+export interface OptimizationCreateResult {
+  optimization_id: string
+  status: AnalysisStatus
+  job_id: string
+  decision_space: Record<string, [number, number]>
+  notes: string[]
+  poll_url: string
+}
+
+export interface OptimizationRun {
+  id: string
+  habitation_id: string
+  base_run_id: string
+  decision_space: Record<string, [number, number]>
+  constraints: Record<string, unknown>
+  strategy: string
+  candidates_evaluated: number
+  status: AnalysisStatus
+  best_candidate_id: number | null
+  promoted_run_id: string | null
+  infeasible_reason: string | null
+  created_at: string
+  completed_at: string | null
+  job_id?: string
+  notes?: string[]
+}
+
+export interface OptimizationCandidate {
+  id: number
+  stage: string
+  decision_values: Record<string, number>
+  feasible: boolean
+  violated_constraints: string[]
+  objective_values: Record<string, number>
+  normalised_values: Record<string, number>
+  score: number | null
+  is_pareto: boolean
+  capex_total_inr: number | null
+}
+
+export interface OptimizationExplanation {
+  [key: string]: unknown
+}
+
+// --- Comparison ----------------------------------------------------------------
+
+export interface Comparison {
+  id: string
+  habitation_id: string
+  run_ids: string[]
+  indicators: string[]
+  title: string | null
+  created_at: string
+}
+
+export interface ComparisonSeriesRow {
+  year_index: number
+  values: Record<string, number | null>
+}
+
+export interface ComparisonSeries {
+  run_ids: string[]
+  indicators: string[]
+  series: Record<string, ComparisonSeriesRow[]>
+}
+
+export interface ComparisonDeltaRow {
+  year_index: number
+  [runId: string]: number | null
+}
+
+export interface ComparisonDeltas {
+  base_run_id: string
+  deltas: Record<string, ComparisonDeltaRow[]>
 }

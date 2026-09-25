@@ -145,7 +145,18 @@ async def run_sweep(db: AsyncSession, analysis: SensitivityAnalysis, session_fac
     base_run = await db.get(SimulationRun, analysis.base_run_id)
     category, field = _split_param_path(analysis.param_path)
     full = await get_parameter_set_full(db, base_run.parameter_set_id)
-    base_param_value = full["categories"].get(category, {}).get(field)
+    # waste_baseline is returned as its own top-level key by
+    # get_parameter_set_full, not nested under "categories" like every
+    # other category (see ParameterSetDetailOut) — reading it via
+    # full["categories"]["waste_baseline"] silently always misses, which
+    # left base_param_value at 0.0 for every waste_baseline.* sweep (e.g.
+    # per_capita_generation_kg_day, one of the catalogue's sweepable
+    # params) and made elasticity() short-circuit to None for every point,
+    # found live via the actual Parameter Sweep workspace.
+    if category == "waste_baseline":
+        base_param_value = (full["waste_baseline"] or {}).get(field)
+    else:
+        base_param_value = full["categories"].get(category, {}).get(field)
     base_param_value = float(base_param_value) if base_param_value is not None else 0.0
 
     base_indicator_values = {

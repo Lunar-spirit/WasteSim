@@ -123,6 +123,15 @@ async def commit_parameter_set(db: AsyncSession, psid: uuid.UUID) -> ParameterSe
     )
     if previous_validated is not None:
         previous_validated.status = ParameterSetStatus.ARCHIVED
+        # Flushed separately, before promoting `ps` below: SQLAlchemy's unit
+        # of work batches same-table UPDATEs from one flush into a single
+        # executemany, and found live, this ends up sending the "set ps to
+        # VALIDATED" row before the "archive previous_validated" row within
+        # that batch — a transient state with two VALIDATED rows for the
+        # same habitation that trips uq_one_validated_parameter_set_per_habitation
+        # even though the end state (one VALIDATED, one ARCHIVED) is valid.
+        # A dedicated flush here forces the archive to commit first.
+        await db.flush()
 
     ps.status = ParameterSetStatus.VALIDATED
 

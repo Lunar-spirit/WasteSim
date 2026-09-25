@@ -8,19 +8,18 @@ import { createContext, useContext, useState, type ReactNode } from 'react'
 // it is still DRAFT (no committed parameters, cannot run a simulation) and
 // does not own DEFAULT_RUN_ID — so it is deliberately not used as the
 // default here, even though it was the literal id in this dashboard's own
-// spec, since pairing it with DEFAULT_RUN_ID would 404 on first load.
+// original spec, since pairing it with DEFAULT_RUN_ID would 404 on first load.
 export const DEFAULT_HABITATION_ID = 'e1586d7d-ae44-47b8-a291-56f30cfc3921'
 export const DEFAULT_RUN_ID = '608df07c-0b28-4720-b33e-21ef0c83917c'
-
-export type DashboardTab = 'simulation' | 'gis'
 
 interface AppContextValue {
   currentHabitationId: string
   setCurrentHabitationId: (id: string) => void
+  // The run every workspace (Simulation, Scenarios, Sensitivity,
+  // Optimization base, Comparison, Reports) treats as "the one currently
+  // in focus" unless a page lets the user pick a different one explicitly.
   activeRunId: string | null
   setActiveRunId: (id: string | null) => void
-  activeTab: DashboardTab
-  setActiveTab: (tab: DashboardTab) => void
   isCopilotOpen: boolean
   setIsCopilotOpen: (open: boolean) => void
 }
@@ -30,7 +29,6 @@ const AppContext = createContext<AppContextValue | null>(null)
 export function AppProvider({ children }: { children: ReactNode }) {
   const [currentHabitationId, setCurrentHabitationId] = useState<string>(DEFAULT_HABITATION_ID)
   const [activeRunId, setActiveRunId] = useState<string | null>(DEFAULT_RUN_ID)
-  const [activeTab, setActiveTab] = useState<DashboardTab>('simulation')
   const [isCopilotOpen, setIsCopilotOpen] = useState(false)
 
   return (
@@ -40,8 +38,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
         setCurrentHabitationId,
         activeRunId,
         setActiveRunId,
-        activeTab,
-        setActiveTab,
         isCopilotOpen,
         setIsCopilotOpen,
       }}
