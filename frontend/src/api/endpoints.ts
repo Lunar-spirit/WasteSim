@@ -15,6 +15,7 @@ import type {
   Habitation,
   HabitationCreatePayload,
   ImpactPreview,
+  LayerType,
   MapOverlay,
   OptimizationCandidate,
   OptimizationCreateResult,
@@ -150,6 +151,17 @@ export async function patchLayer(
   payload: { is_visible_default?: boolean; style?: Record<string, unknown>; z_index?: number; layer_name?: string },
 ): Promise<GISLayer> {
   const { data } = await apiClient.patch<ApiEnvelope<GISLayer>>(`/api/v1/layers/${layerId}`, payload)
+  return unwrap(data)
+}
+
+export async function createLayer(
+  habitationId: string,
+  payload: { layer_name: string; layer_type: LayerType; geojson: Record<string, unknown> },
+): Promise<GISLayer> {
+  const { data } = await apiClient.post<ApiEnvelope<GISLayer>>(
+    `/api/v1/habitations/${habitationId}/layers`,
+    payload,
+  )
   return unwrap(data)
 }
 

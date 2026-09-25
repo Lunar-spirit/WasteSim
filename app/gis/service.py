@@ -99,13 +99,14 @@ async def create_manual_layer(
 
 async def _enforce_boundary_integrity(db: AsyncSession, layer: GISLayer) -> None:
     habitation = await db.get(Habitation, layer.habitation_id)
+    total = await db.scalar(select(func.count()).select_from(GISFeature).where(GISFeature.layer_id == layer.id))
+
     if habitation.boundary is None:
         layer.status = LayerStatus.READY
+        layer.feature_count = total
         layer.updated_at = datetime.now(timezone.utc)
         await db.flush()
         return
-
-    total = await db.scalar(select(func.count()).select_from(GISFeature).where(GISFeature.layer_id == layer.id))
 
     outside = await db.scalar(
         text(
@@ -132,6 +133,7 @@ async def _enforce_boundary_integrity(db: AsyncSession, layer: GISLayer) -> None
         )
 
     layer.status = LayerStatus.READY
+    layer.feature_count = total
     # Set explicitly rather than relying on the column's onupdate=func.now():
     # an UPDATE's server-generated onupdate value isn't always eagerly
     # re-fetched into the Python object the way an INSERT's server_default

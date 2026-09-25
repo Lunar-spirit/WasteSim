@@ -1,27 +1,69 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, MapPinOff, Mountain, Route, Sparkles } from 'lucide-react'
+import { Check, Factory, Loader2, MapPin, MapPinOff, Mountain, Route, Sparkles, Trash2, X } from 'lucide-react'
 // maplibre-gl v6 ships ESM with only named exports — there is no default
 // export (`import maplibregl from 'maplibre-gl'` fails at runtime with
 // "does not provide an export named 'default'", found live while first
 // building this workspace).
-import { Map as MaplibreMap, NavigationControl, type StyleSpecification } from 'maplibre-gl'
+import { Map as MaplibreMap, Marker, NavigationControl, type StyleSpecification } from 'maplibre-gl'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { autoPopulateHabitation, fetchHabitation, fetchLayers, fetchMapOverlay, fetchParameterSet } from '../api/endpoints'
+import { autoPopulateHabitation, createLayer, fetchHabitation, fetchLayers, fetchMapOverlay, fetchParameterSet } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
 import { setDraftPsid } from '../lib/history'
 import type { LayerType, MapOverlay } from '../types/api'
 
-const BASE_STYLE: StyleSpecification = {
-  version: 8,
-  sources: {
-    'osm-raster': {
-      type: 'raster',
-      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-      tileSize: 256,
-      attribution: '© OpenStreetMap contributors',
-    },
+// Several free, keyless raster basemaps, tried in order. Real map providers
+// occasionally rate-limit, block, or go slow for embedded/automated
+// traffic (OpenStreetMap's own tile server is the strictest about this) —
+// rather than depend on exactly one of them, the map watches for a burst
+// of tile failures and quietly swaps to the next provider so the map
+// keeps working "no matter which API" is reachable right now.
+const BASEMAP_PROVIDERS: { id: string; tiles: string[]; attribution: string }[] = [
+  {
+    id: 'carto-light',
+    tiles: [
+      'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+      'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+      'https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+      'https://d.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+    ],
+    attribution: '© OpenStreetMap contributors © CARTO',
   },
-  layers: [{ id: 'osm-raster-layer', type: 'raster', source: 'osm-raster' }],
+  {
+    id: 'osm-standard',
+    tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
+    attribution: '© OpenStreetMap contributors',
+  },
+  {
+    id: 'opentopomap',
+    tiles: [
+      'https://a.tile.opentopomap.org/{z}/{x}/{y}.png',
+      'https://b.tile.opentopomap.org/{z}/{x}/{y}.png',
+      'https://c.tile.opentopomap.org/{z}/{x}/{y}.png',
+    ],
+    attribution: '© OpenStreetMap contributors, SRTM | © OpenTopoMap',
+  },
+]
+
+const BASEMAP_SOURCE_ID = 'basemap-raster'
+// A tile server that's genuinely down errors quickly and repeatedly — this
+// many failures on the current provider (without at least one tile ever
+// loading) is treated as "this one isn't working", not just bad luck.
+const TILE_FAILURE_THRESHOLD = 6
+
+function buildStyle(providerIndex: number): StyleSpecification {
+  const provider = BASEMAP_PROVIDERS[providerIndex] ?? BASEMAP_PROVIDERS[0]
+  return {
+    version: 8,
+    sources: {
+      [BASEMAP_SOURCE_ID]: {
+        type: 'raster',
+        tiles: provider.tiles,
+        tileSize: 256,
+        attribution: provider.attribution,
+      },
+    },
+    layers: [{ id: `${BASEMAP_SOURCE_ID}-layer`, type: 'raster', source: BASEMAP_SOURCE_ID }],
+  }
 }
 
 const BOUNDARY_SOURCE_ID = 'habitation-boundary'
@@ -51,6 +93,15 @@ const LAYER_TOGGLES: { type: LayerType; label: string }[] = [
   { type: 'TERRAIN_CONTOUR', label: 'Terrain Contours' },
   { type: 'ECO_SENSITIVE', label: 'Eco-Sensitive Zones' },
   { type: 'INDUSTRIAL_ZONE', label: 'Industrial Zones' },
+]
+
+// The three kinds of point a planner can drop a pin for, with the exact
+// same plain-language names used everywhere else on this page (the layer
+// toggles above) so the same thing is never called two different names.
+const PLACEABLE_POINT_TYPES: { type: LayerType; label: string; icon: typeof MapPin }[] = [
+  { type: 'COLLECTION_ZONE', label: 'Collection Point', icon: MapPin },
+  { type: 'FACILITY_TREATMENT', label: 'Treatment Facility', icon: Factory },
+  { type: 'FACILITY_LANDFILL', label: 'Dumpsite', icon: Trash2 },
 ]
 
 function addFeatureCollectionLayers(
@@ -83,7 +134,8 @@ function addFeatureCollectionLayers(
   })
 }
 
-function renderOverlay(map: MaplibreMap, overlay: MapOverlay, visibleTypes: Set<LayerType>) {
+function renderOverlay(map: MaplibreMap, overlay: MapOverlay | undefined, visibleTypes: Set<LayerType>) {
+  if (!overlay) return
   const staleLayers =
     map.getStyle().layers?.filter((l) => l.id.startsWith(LAYER_SOURCE_PREFIX) || l.id.startsWith(BOUNDARY_SOURCE_ID)) ?? []
   for (const layer of staleLayers) {
@@ -117,20 +169,52 @@ function renderOverlay(map: MaplibreMap, overlay: MapOverlay, visibleTypes: Set<
   }
 }
 
+interface PendingPoint {
+  lng: number
+  lat: number
+}
+
 export default function GisStudioPage() {
   const { currentHabitationId } = useAppContext()
   const queryClient = useQueryClient()
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<MaplibreMap | null>(null)
   const isStyleLoadedRef = useRef(false)
+  const markerRef = useRef<Marker | null>(null)
 
   const [visibleTypes, setVisibleTypes] = useState<Set<LayerType>>(() => new Set(LAYER_TOGGLES.map((t) => t.type)))
   const [autoPopulateStatus, setAutoPopulateStatus] = useState<string | null>(null)
+
+  // --- Click-to-place point picker ------------------------------------------
+  const [isPicking, setIsPicking] = useState(false)
+  const [pendingPoint, setPendingPoint] = useState<PendingPoint | null>(null)
+  const [pendingType, setPendingType] = useState<LayerType>('COLLECTION_ZONE')
+  const [chipPixel, setChipPixel] = useState<{ x: number; y: number } | null>(null)
+  const [placeError, setPlaceError] = useState<string | null>(null)
+
+  // Refs so the map's permanently-registered event handlers (below) always
+  // see the latest values without needing to re-subscribe on every render.
+  const isPickingRef = useRef(isPicking)
+  const pendingPointRef = useRef(pendingPoint)
+  const overlayRef = useRef<MapOverlay | undefined>(undefined)
+  const visibleTypesRef = useRef(visibleTypes)
+  useEffect(() => {
+    isPickingRef.current = isPicking
+  }, [isPicking])
+  useEffect(() => {
+    pendingPointRef.current = pendingPoint
+  }, [pendingPoint])
+  useEffect(() => {
+    visibleTypesRef.current = visibleTypes
+  }, [visibleTypes])
 
   const overlayQuery = useQuery({
     queryKey: ['map-overlay', currentHabitationId],
     queryFn: () => fetchMapOverlay(currentHabitationId),
   })
+  useEffect(() => {
+    overlayRef.current = overlayQuery.data
+  }, [overlayQuery.data])
 
   const layersQuery = useQuery({
     queryKey: ['gis-layers', currentHabitationId],
@@ -157,17 +241,9 @@ export default function GisStudioPage() {
         `Auto-populated ${automated.length} field(s)` +
           (skipped.length ? `, skipped ${skipped.length} (external service unavailable)` : ''),
       )
-      // Auto-populate writes into a real draft parameter set behind the
-      // scenes (creating one if the habitation had none) — record it so
-      // the Parameters page reuses this draft instead of starting a blank
-      // second one that would orphan everything just fetched.
       const psid = result.parameter_set_id as string | undefined
       if (psid) {
         setDraftPsid(currentHabitationId, psid)
-        // The Parameters page may already have this exact parameter set
-        // cached from an earlier visit (before auto-populate wrote into
-        // it) — without this, it would keep showing pre-populate values
-        // until something else happens to refetch it.
         queryClient.invalidateQueries({ queryKey: ['parameter-set', psid] })
       }
       queryClient.invalidateQueries({ queryKey: ['map-overlay', currentHabitationId] })
@@ -177,25 +253,116 @@ export default function GisStudioPage() {
     onError: (error: Error) => setAutoPopulateStatus(`Auto-populate failed: ${error.message}`),
   })
 
+  function clearPin() {
+    markerRef.current?.remove()
+    markerRef.current = null
+    setPendingPoint(null)
+    setChipPixel(null)
+    setPlaceError(null)
+  }
+
+  function stopPicking() {
+    setIsPicking(false)
+    clearPin()
+  }
+
+  const placePointMutation = useMutation({
+    mutationFn: (point: PendingPoint & { layerType: LayerType }) => {
+      const label = PLACEABLE_POINT_TYPES.find((t) => t.type === point.layerType)?.label ?? point.layerType
+      return createLayer(currentHabitationId, {
+        layer_name: `${label} — ${new Date().toLocaleString()}`,
+        layer_type: point.layerType,
+        geojson: {
+          type: 'FeatureCollection',
+          features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [point.lng, point.lat] } }],
+        },
+      })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gis-layers', currentHabitationId] })
+      queryClient.invalidateQueries({ queryKey: ['map-overlay', currentHabitationId] })
+      stopPicking()
+    },
+    onError: (error: Error) => setPlaceError(error.message),
+  })
+
+  // --- Map lifecycle: created once, survives basemap swaps and re-renders --
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return
+    let basemapIndex = 0
+    let tileFailureCount = 0
+
     const map = new MaplibreMap({
       container: mapContainerRef.current,
-      style: BASE_STYLE,
+      style: buildStyle(basemapIndex),
       center: [74.8, 13.35],
       zoom: 12,
       attributionControl: { compact: true },
     })
     map.addControl(new NavigationControl({ showCompass: false }), 'top-right')
+
+    function updateChipPixel() {
+      const point = pendingPointRef.current
+      if (!point) return
+      const { x, y } = map.project([point.lng, point.lat])
+      setChipPixel({ x, y })
+    }
+
     map.on('load', () => {
       isStyleLoadedRef.current = true
-      if (overlayQuery.data) renderOverlay(map, overlayQuery.data, visibleTypes)
+      renderOverlay(map, overlayRef.current, visibleTypesRef.current)
     })
+
+    // A single style swap re-applies once a run of tile failures suggests
+    // the current provider isn't reachable — see BASEMAP_PROVIDERS above.
+    map.on('error', (e) => {
+      const sourceId = (e as unknown as { sourceId?: string }).sourceId
+      if (sourceId !== BASEMAP_SOURCE_ID) return
+      tileFailureCount += 1
+      if (tileFailureCount >= TILE_FAILURE_THRESHOLD && basemapIndex < BASEMAP_PROVIDERS.length - 1) {
+        basemapIndex += 1
+        tileFailureCount = 0
+        map.setStyle(buildStyle(basemapIndex))
+      }
+    })
+    map.on('style.load', () => {
+      isStyleLoadedRef.current = true
+      renderOverlay(map, overlayRef.current, visibleTypesRef.current)
+    })
+
+    // Re-project the confirm/cancel chip to stay glued to the pin while
+    // panning or zooming (the pin itself is a DOM marker and repositions
+    // on its own — this keeps the chip next to it).
+    map.on('move', updateChipPixel)
+
+    map.on('click', (e) => {
+      if (!isPickingRef.current) return
+      const point = { lng: e.lngLat.lng, lat: e.lngLat.lat }
+      if (markerRef.current) {
+        markerRef.current.setLngLat([point.lng, point.lat])
+      } else {
+        const marker = new Marker({ draggable: true, color: '#059669' }).setLngLat([point.lng, point.lat]).addTo(map)
+        marker.on('dragend', () => {
+          const lngLat = marker.getLngLat()
+          const dragged = { lng: lngLat.lng, lat: lngLat.lat }
+          pendingPointRef.current = dragged
+          setPendingPoint(dragged)
+          updateChipPixel()
+        })
+        markerRef.current = marker
+      }
+      pendingPointRef.current = point
+      setPendingPoint(point)
+      setPlaceError(null)
+      updateChipPixel()
+    })
+
     mapRef.current = map
     return () => {
       map.remove()
       mapRef.current = null
       isStyleLoadedRef.current = false
+      markerRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -205,6 +372,13 @@ export default function GisStudioPage() {
     if (!map || !overlayQuery.data || !isStyleLoadedRef.current) return
     renderOverlay(map, overlayQuery.data, visibleTypes)
   }, [overlayQuery.data, visibleTypes])
+
+  // Crosshair cursor only while actively placing a point.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    map.getCanvas().style.cursor = isPicking ? 'crosshair' : ''
+  }, [isPicking])
 
   function toggleLayer(type: LayerType) {
     setVisibleTypes((prev) => {
@@ -242,6 +416,17 @@ export default function GisStudioPage() {
         <div className="flex items-center gap-3">
           <button
             type="button"
+            onClick={() => (isPicking ? stopPicking() : setIsPicking(true))}
+            title={isPicking ? 'Stop placing a point' : 'Click the map to drop a point (collection point, treatment facility, or dumpsite)'}
+            aria-pressed={isPicking}
+            className={`flex items-center gap-2 rounded-lg border px-3.5 py-2 text-sm font-medium transition ${
+              isPicking ? 'border-emerald-400 bg-emerald-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+            }`}
+          >
+            <MapPin className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
             onClick={() => autoPopulateMutation.mutate()}
             disabled={autoPopulateMutation.isPending}
             className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-60"
@@ -253,6 +438,11 @@ export default function GisStudioPage() {
         </div>
       </div>
       {autoPopulateStatus && <p className="text-xs text-slate-500">{autoPopulateStatus}</p>}
+      {isPicking && !pendingPoint && (
+        <p className="flex items-center gap-1.5 text-xs text-emerald-700">
+          <MapPin className="h-3.5 w-3.5" /> Click anywhere on the map to drop a point. Drag it afterwards to fine-tune the spot.
+        </p>
+      )}
 
       <div className="flex flex-wrap gap-2">
         {LAYER_TOGGLES.map(({ type, label }) => {
@@ -284,6 +474,51 @@ export default function GisStudioPage() {
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/90 text-slate-500">
             <MapPinOff className="h-8 w-8" />
             <p className="text-sm">Could not load GIS layers for this habitation.</p>
+          </div>
+        )}
+
+        {/* Floating confirm/cancel chip, glued to the pin being placed */}
+        {pendingPoint && chipPixel && (
+          <div
+            className="absolute z-10 flex -translate-x-1/2 -translate-y-full flex-col items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg"
+            style={{ left: chipPixel.x, top: chipPixel.y - 14 }}
+          >
+            <div className="flex items-center gap-1">
+              {PLACEABLE_POINT_TYPES.map(({ type, label, icon: Icon }) => (
+                <button
+                  key={type}
+                  type="button"
+                  title={label}
+                  onClick={() => setPendingType(type)}
+                  className={`flex h-7 w-7 items-center justify-center rounded-lg border transition ${
+                    pendingType === type ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                </button>
+              ))}
+              <span className="mx-0.5 h-5 w-px bg-slate-200" />
+              <button
+                key="confirm"
+                type="button"
+                title={`Save as: ${PLACEABLE_POINT_TYPES.find((t) => t.type === pendingType)?.label}`}
+                onClick={() => placePointMutation.mutate({ ...pendingPoint, layerType: pendingType })}
+                disabled={placePointMutation.isPending}
+                className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-600 text-white transition hover:bg-emerald-700 disabled:opacity-60"
+              >
+                {placePointMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+              </button>
+              <button
+                key="cancel"
+                type="button"
+                title="Discard this point"
+                onClick={stopPicking}
+                className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-50"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            {placeError && <p className="max-w-[220px] text-center text-[10px] text-red-600">{placeError}</p>}
           </div>
         )}
 
