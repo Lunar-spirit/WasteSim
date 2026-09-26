@@ -97,13 +97,43 @@ async def create_manual_layer(
     return layer
 
 
+async def _compute_total_length_km(db: AsyncSession, layer_id: uuid.UUID) -> float | None:
+    """Real-world length via PostGIS's geography cast — geodesically
+    accurate anywhere on Earth, unlike a flat-projection estimate, and
+    computed the same way no matter how the feature's geometry arrived
+    (manually drawn, pasted GeoJSON, file upload, or an automated fetch).
+    Summed over whichever features are actually line geometry; None (not
+    0) when a layer has none at all, since "road length" is meaningless
+    for a point/polygon layer rather than genuinely zero.
+    """
+    has_any_line = await db.scalar(
+        text(
+            "SELECT EXISTS (SELECT 1 FROM gis_features WHERE layer_id = :layer_id "
+            "AND GeometryType(geom) IN ('LINESTRING', 'MULTILINESTRING'))"
+        ),
+        {"layer_id": str(layer_id)},
+    )
+    if not has_any_line:
+        return None
+    total_m = await db.scalar(
+        text(
+            "SELECT COALESCE(SUM(ST_Length(geography(geom))), 0) FROM gis_features "
+            "WHERE layer_id = :layer_id AND GeometryType(geom) IN ('LINESTRING', 'MULTILINESTRING')"
+        ),
+        {"layer_id": str(layer_id)},
+    )
+    return round(float(total_m) / 1000, 3)
+
+
 async def _enforce_boundary_integrity(db: AsyncSession, layer: GISLayer) -> None:
     habitation = await db.get(Habitation, layer.habitation_id)
     total = await db.scalar(select(func.count()).select_from(GISFeature).where(GISFeature.layer_id == layer.id))
+    total_length_km = await _compute_total_length_km(db, layer.id)
 
     if habitation.boundary is None:
         layer.status = LayerStatus.READY
         layer.feature_count = total
+        layer.total_length_km = total_length_km
         layer.updated_at = datetime.now(timezone.utc)
         await db.flush()
         return
@@ -134,6 +164,7 @@ async def _enforce_boundary_integrity(db: AsyncSession, layer: GISLayer) -> None
 
     layer.status = LayerStatus.READY
     layer.feature_count = total
+    layer.total_length_km = total_length_km
     # Set explicitly rather than relying on the column's onupdate=func.now():
     # an UPDATE's server-generated onupdate value isn't always eagerly
     # re-fetched into the Python object the way an INSERT's server_default
