@@ -11,6 +11,7 @@ import {
   promoteOptimizationCandidate,
 } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
+import { useSelectedBaseRun } from '../lib/baseRun'
 import { pushHistory, useHistory } from '../lib/history'
 import type { AnalysisStatus, OptimizationCandidate } from '../types/api'
 
@@ -22,8 +23,7 @@ export default function OptimizationPage() {
 
   const runsQuery = useQuery({ queryKey: ['simulations', currentHabitationId], queryFn: () => listSimulations(currentHabitationId) })
   const baseRuns = (runsQuery.data ?? []).filter((r) => r.run_type === 'BASE' && r.status === 'COMPLETED')
-  const [baseRunId, setBaseRunId] = useState<string | null>(activeRunId)
-  const effectiveBaseRunId = baseRunId ?? activeRunId
+  const [effectiveBaseRunId, setBaseRunId] = useSelectedBaseRun(baseRuns, activeRunId)
 
   const [wCost, setWCost] = useState(50)
   const [wDiversion, setWDiversion] = useState(30)

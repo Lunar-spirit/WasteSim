@@ -10,6 +10,7 @@ import {
   previewEventImpact,
 } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
+import { useSelectedBaseRun } from '../lib/baseRun'
 import type { EventType } from '../types/api'
 
 const EVENT_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -32,8 +33,7 @@ export default function ScenariosPage() {
     queryFn: () => listSimulations(currentHabitationId),
   })
   const baseRuns = (runsQuery.data ?? []).filter((r) => r.run_type === 'BASE' && r.status === 'COMPLETED')
-  const [baseRunId, setBaseRunId] = useState<string | null>(activeRunId)
-  const effectiveBaseRunId = baseRunId ?? activeRunId
+  const [effectiveBaseRunId, setBaseRunId] = useSelectedBaseRun(baseRuns, activeRunId)
 
   const catalogueQuery = useQuery({ queryKey: ['event-catalogue'], queryFn: fetchEventCatalogue })
   const overlayQuery = useQuery({

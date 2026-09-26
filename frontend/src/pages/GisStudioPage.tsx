@@ -1,73 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Check, Factory, Loader2, MapPin, MapPinOff, Mountain, Route, Sparkles, Trash2, X } from 'lucide-react'
-// maplibre-gl v6 ships ESM with only named exports — there is no default
-// export (`import maplibregl from 'maplibre-gl'` fails at runtime with
-// "does not provide an export named 'default'", found live while first
-// building this workspace).
-import { Map as MaplibreMap, Marker, NavigationControl, type StyleSpecification } from 'maplibre-gl'
+import L from 'leaflet'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { autoPopulateHabitation, createLayer, fetchHabitation, fetchLayers, fetchMapOverlay, fetchParameterSet } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
+import { attachBasemapWithFallback } from '../lib/basemap'
 import { setDraftPsid } from '../lib/history'
 import type { LayerType, MapOverlay } from '../types/api'
-
-// Several free, keyless raster basemaps, tried in order. Real map providers
-// occasionally rate-limit, block, or go slow for embedded/automated
-// traffic (OpenStreetMap's own tile server is the strictest about this) —
-// rather than depend on exactly one of them, the map watches for a burst
-// of tile failures and quietly swaps to the next provider so the map
-// keeps working "no matter which API" is reachable right now.
-const BASEMAP_PROVIDERS: { id: string; tiles: string[]; attribution: string }[] = [
-  {
-    id: 'carto-light',
-    tiles: [
-      'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-      'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-      'https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-      'https://d.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
-    ],
-    attribution: '© OpenStreetMap contributors © CARTO',
-  },
-  {
-    id: 'osm-standard',
-    tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-    attribution: '© OpenStreetMap contributors',
-  },
-  {
-    id: 'opentopomap',
-    tiles: [
-      'https://a.tile.opentopomap.org/{z}/{x}/{y}.png',
-      'https://b.tile.opentopomap.org/{z}/{x}/{y}.png',
-      'https://c.tile.opentopomap.org/{z}/{x}/{y}.png',
-    ],
-    attribution: '© OpenStreetMap contributors, SRTM | © OpenTopoMap',
-  },
-]
-
-const BASEMAP_SOURCE_ID = 'basemap-raster'
-// A tile server that's genuinely down errors quickly and repeatedly — this
-// many failures on the current provider (without at least one tile ever
-// loading) is treated as "this one isn't working", not just bad luck.
-const TILE_FAILURE_THRESHOLD = 6
-
-function buildStyle(providerIndex: number): StyleSpecification {
-  const provider = BASEMAP_PROVIDERS[providerIndex] ?? BASEMAP_PROVIDERS[0]
-  return {
-    version: 8,
-    sources: {
-      [BASEMAP_SOURCE_ID]: {
-        type: 'raster',
-        tiles: provider.tiles,
-        tileSize: 256,
-        attribution: provider.attribution,
-      },
-    },
-    layers: [{ id: `${BASEMAP_SOURCE_ID}-layer`, type: 'raster', source: BASEMAP_SOURCE_ID }],
-  }
-}
-
-const BOUNDARY_SOURCE_ID = 'habitation-boundary'
-const LAYER_SOURCE_PREFIX = 'gis-layer-'
 
 const LAYER_COLOURS: Record<string, string> = {
   ROAD: '#334155',
@@ -104,68 +43,50 @@ const PLACEABLE_POINT_TYPES: { type: LayerType; label: string; icon: typeof MapP
   { type: 'FACILITY_LANDFILL', label: 'Dumpsite', icon: Trash2 },
 ]
 
-function addFeatureCollectionLayers(
-  map: MaplibreMap,
-  sourceId: string,
-  featureCollection: GeoJSON.FeatureCollection,
-  colour: string,
-) {
-  map.addSource(sourceId, { type: 'geojson', data: featureCollection })
-  map.addLayer({
-    id: `${sourceId}-fill`,
-    type: 'fill',
-    source: sourceId,
-    filter: ['==', ['geometry-type'], 'Polygon'],
-    paint: { 'fill-color': colour, 'fill-opacity': 0.15 },
-  })
-  map.addLayer({
-    id: `${sourceId}-line`,
-    type: 'line',
-    source: sourceId,
-    filter: ['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'LineString']],
-    paint: { 'line-color': colour, 'line-width': 2 },
-  })
-  map.addLayer({
-    id: `${sourceId}-point`,
-    type: 'circle',
-    source: sourceId,
-    filter: ['==', ['geometry-type'], 'Point'],
-    paint: { 'circle-radius': 6, 'circle-color': colour, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#ffffff' },
+// A plain inline-SVG pin, not Leaflet's default marker image (whose asset
+// path breaks under most bundlers unless specially configured) — no
+// external file dependency either way.
+function pinIcon(colour: string): L.DivIcon {
+  return L.divIcon({
+    className: '',
+    html: `<svg width="28" height="36" viewBox="0 0 28 36" xmlns="http://www.w3.org/2000/svg">
+      <path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 22 14 22s14-11.5 14-22c0-7.7-6.3-14-14-14z" fill="${colour}" stroke="white" stroke-width="2"/>
+      <circle cx="14" cy="14" r="5" fill="white"/>
+    </svg>`,
+    iconSize: [28, 36],
+    iconAnchor: [14, 36],
   })
 }
 
-function renderOverlay(map: MaplibreMap, overlay: MapOverlay | undefined, visibleTypes: Set<LayerType>) {
+function renderOverlay(map: L.Map, overlayLayerGroup: L.LayerGroup, overlay: MapOverlay | undefined, visibleTypes: Set<LayerType>) {
+  overlayLayerGroup.clearLayers()
   if (!overlay) return
-  const staleLayers =
-    map.getStyle().layers?.filter((l) => l.id.startsWith(LAYER_SOURCE_PREFIX) || l.id.startsWith(BOUNDARY_SOURCE_ID)) ?? []
-  for (const layer of staleLayers) {
-    if (map.getLayer(layer.id)) map.removeLayer(layer.id)
-  }
-  for (const sourceId of Object.keys(map.getStyle().sources ?? {})) {
-    if (sourceId.startsWith(LAYER_SOURCE_PREFIX) || sourceId === BOUNDARY_SOURCE_ID) {
-      if (map.getSource(sourceId)) map.removeSource(sourceId)
-    }
-  }
 
   if (overlay.boundary && visibleTypes.has('ADMIN_BOUNDARY')) {
-    addFeatureCollectionLayers(
-      map,
-      BOUNDARY_SOURCE_ID,
-      { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: overlay.boundary }] },
-      '#16a34a',
-    )
+    L.geoJSON(overlay.boundary, {
+      style: { color: '#16a34a', weight: 2, fillOpacity: 0.08 },
+    }).addTo(overlayLayerGroup)
   }
 
   for (const layer of overlay.layers) {
     if (layer.mode !== 'geojson' || !layer.features) continue
     if (!visibleTypes.has(layer.layer_type)) continue
     const colour = LAYER_COLOURS[layer.layer_type] ?? '#0ea5e9'
-    addFeatureCollectionLayers(map, `${LAYER_SOURCE_PREFIX}${layer.layer_id}`, layer.features, colour)
+    L.geoJSON(layer.features, {
+      style: { color: colour, weight: 2, fillOpacity: 0.15 },
+      pointToLayer: (_feature, latlng) => L.circleMarker(latlng, { radius: 6, color: '#ffffff', weight: 1.5, fillColor: colour, fillOpacity: 1 }),
+    }).addTo(overlayLayerGroup)
   }
 
   if (overlay.bbox) {
     const [minLon, minLat, maxLon, maxLat] = overlay.bbox
-    map.fitBounds([[minLon, minLat], [maxLon, maxLat]], { padding: 48, duration: 400 })
+    map.fitBounds(
+      [
+        [minLat, minLon],
+        [maxLat, maxLon],
+      ],
+      { padding: [48, 48] },
+    )
   }
 }
 
@@ -178,9 +99,9 @@ export default function GisStudioPage() {
   const { currentHabitationId } = useAppContext()
   const queryClient = useQueryClient()
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
-  const mapRef = useRef<MaplibreMap | null>(null)
-  const isStyleLoadedRef = useRef(false)
-  const markerRef = useRef<Marker | null>(null)
+  const mapRef = useRef<L.Map | null>(null)
+  const overlayLayerGroupRef = useRef<L.LayerGroup | null>(null)
+  const markerRef = useRef<L.Marker | null>(null)
 
   const [visibleTypes, setVisibleTypes] = useState<Set<LayerType>>(() => new Set(LAYER_TOGGLES.map((t) => t.type)))
   const [autoPopulateStatus, setAutoPopulateStatus] = useState<string | null>(null)
@@ -196,25 +117,17 @@ export default function GisStudioPage() {
   // see the latest values without needing to re-subscribe on every render.
   const isPickingRef = useRef(isPicking)
   const pendingPointRef = useRef(pendingPoint)
-  const overlayRef = useRef<MapOverlay | undefined>(undefined)
-  const visibleTypesRef = useRef(visibleTypes)
   useEffect(() => {
     isPickingRef.current = isPicking
   }, [isPicking])
   useEffect(() => {
     pendingPointRef.current = pendingPoint
   }, [pendingPoint])
-  useEffect(() => {
-    visibleTypesRef.current = visibleTypes
-  }, [visibleTypes])
 
   const overlayQuery = useQuery({
     queryKey: ['map-overlay', currentHabitationId],
     queryFn: () => fetchMapOverlay(currentHabitationId),
   })
-  useEffect(() => {
-    overlayRef.current = overlayQuery.data
-  }, [overlayQuery.data])
 
   const layersQuery = useQuery({
     queryKey: ['gis-layers', currentHabitationId],
@@ -286,82 +199,59 @@ export default function GisStudioPage() {
     onError: (error: Error) => setPlaceError(error.message),
   })
 
-  // --- Map lifecycle: created once, survives basemap swaps and re-renders --
+  // --- Map lifecycle: created once, a plain Leaflet map (regular <img>
+  // tiles + SVG overlays) rather than a WebGL canvas — found live that this
+  // environment's browser can execute WebGL draw calls correctly but never
+  // actually presents the composited frame on screen, so a WebGL map (the
+  // previous MapLibre GL JS build of this page) rendered real pixel data
+  // into its own buffer yet stayed visibly blank no matter what tile
+  // provider it used. Regular DOM/SVG content doesn't have that problem.
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return
-    let basemapIndex = 0
-    let tileFailureCount = 0
+    const map = L.map(mapContainerRef.current, { center: [13.35, 74.8], zoom: 12, zoomControl: true })
+    attachBasemapWithFallback(map)
+    const overlayLayerGroup = L.layerGroup().addTo(map)
+    overlayLayerGroupRef.current = overlayLayerGroup
 
-    const map = new MaplibreMap({
-      container: mapContainerRef.current,
-      style: buildStyle(basemapIndex),
-      center: [74.8, 13.35],
-      zoom: 12,
-      attributionControl: { compact: true },
-    })
-    map.addControl(new NavigationControl({ showCompass: false }), 'top-right')
-
-    function updateChipPixel() {
-      const point = pendingPointRef.current
-      if (!point) return
-      const { x, y } = map.project([point.lng, point.lat])
-      setChipPixel({ x, y })
+    function updateChipPixel(latlng: L.LatLng) {
+      const point = map.latLngToContainerPoint(latlng)
+      setChipPixel({ x: point.x, y: point.y })
     }
 
-    map.on('load', () => {
-      isStyleLoadedRef.current = true
-      renderOverlay(map, overlayRef.current, visibleTypesRef.current)
-    })
-
-    // A single style swap re-applies once a run of tile failures suggests
-    // the current provider isn't reachable — see BASEMAP_PROVIDERS above.
-    map.on('error', (e) => {
-      const sourceId = (e as unknown as { sourceId?: string }).sourceId
-      if (sourceId !== BASEMAP_SOURCE_ID) return
-      tileFailureCount += 1
-      if (tileFailureCount >= TILE_FAILURE_THRESHOLD && basemapIndex < BASEMAP_PROVIDERS.length - 1) {
-        basemapIndex += 1
-        tileFailureCount = 0
-        map.setStyle(buildStyle(basemapIndex))
+    map.on('move', () => {
+      if (pendingPointRef.current) {
+        updateChipPixel(L.latLng(pendingPointRef.current.lat, pendingPointRef.current.lng))
       }
     })
-    map.on('style.load', () => {
-      isStyleLoadedRef.current = true
-      renderOverlay(map, overlayRef.current, visibleTypesRef.current)
-    })
 
-    // Re-project the confirm/cancel chip to stay glued to the pin while
-    // panning or zooming (the pin itself is a DOM marker and repositions
-    // on its own — this keeps the chip next to it).
-    map.on('move', updateChipPixel)
-
-    map.on('click', (e) => {
+    map.on('click', (e: L.LeafletMouseEvent) => {
       if (!isPickingRef.current) return
-      const point = { lng: e.lngLat.lng, lat: e.lngLat.lat }
+      const point = { lng: e.latlng.lng, lat: e.latlng.lat }
       if (markerRef.current) {
-        markerRef.current.setLngLat([point.lng, point.lat])
+        markerRef.current.setLatLng(e.latlng)
       } else {
-        const marker = new Marker({ draggable: true, color: '#059669' }).setLngLat([point.lng, point.lat]).addTo(map)
+        const marker = L.marker(e.latlng, { draggable: true, icon: pinIcon('#059669') }).addTo(map)
+        marker.on('drag', () => updateChipPixel(marker.getLatLng()))
         marker.on('dragend', () => {
-          const lngLat = marker.getLngLat()
-          const dragged = { lng: lngLat.lng, lat: lngLat.lat }
+          const latlng = marker.getLatLng()
+          const dragged = { lng: latlng.lng, lat: latlng.lat }
           pendingPointRef.current = dragged
           setPendingPoint(dragged)
-          updateChipPixel()
+          updateChipPixel(latlng)
         })
         markerRef.current = marker
       }
       pendingPointRef.current = point
       setPendingPoint(point)
       setPlaceError(null)
-      updateChipPixel()
+      updateChipPixel(e.latlng)
     })
 
     mapRef.current = map
     return () => {
       map.remove()
       mapRef.current = null
-      isStyleLoadedRef.current = false
+      overlayLayerGroupRef.current = null
       markerRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -369,15 +259,17 @@ export default function GisStudioPage() {
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !overlayQuery.data || !isStyleLoadedRef.current) return
-    renderOverlay(map, overlayQuery.data, visibleTypes)
+    const overlayLayerGroup = overlayLayerGroupRef.current
+    if (!map || !overlayLayerGroup || !overlayQuery.data) return
+    renderOverlay(map, overlayLayerGroup, overlayQuery.data, visibleTypes)
   }, [overlayQuery.data, visibleTypes])
 
   // Crosshair cursor only while actively placing a point.
   useEffect(() => {
     const map = mapRef.current
     if (!map) return
-    map.getCanvas().style.cursor = isPicking ? 'crosshair' : ''
+    const container = map.getContainer()
+    container.style.cursor = isPicking ? 'crosshair' : ''
   }, [isPicking])
 
   function toggleLayer(type: LayerType) {
@@ -466,12 +358,12 @@ export default function GisStudioPage() {
       <div className="relative min-h-[480px] flex-1 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
         <div ref={mapContainerRef} className="absolute inset-0" />
         {overlayQuery.isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-white/70">
+          <div className="absolute inset-0 z-[500] flex items-center justify-center bg-white/70">
             <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
           </div>
         )}
         {overlayQuery.isError && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/90 text-slate-500">
+          <div className="absolute inset-0 z-[500] flex flex-col items-center justify-center gap-2 bg-white/90 text-slate-500">
             <MapPinOff className="h-8 w-8" />
             <p className="text-sm">Could not load GIS layers for this habitation.</p>
           </div>
@@ -480,7 +372,7 @@ export default function GisStudioPage() {
         {/* Floating confirm/cancel chip, glued to the pin being placed */}
         {pendingPoint && chipPixel && (
           <div
-            className="absolute z-10 flex -translate-x-1/2 -translate-y-full flex-col items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg"
+            className="absolute z-[600] flex -translate-x-1/2 -translate-y-full flex-col items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg"
             style={{ left: chipPixel.x, top: chipPixel.y - 14 }}
           >
             <div className="flex items-center gap-1">
@@ -523,7 +415,7 @@ export default function GisStudioPage() {
         )}
 
         {/* Floating GIS Inspector Card */}
-        <div className="absolute bottom-4 left-4 w-64 rounded-xl border border-slate-200 bg-white/95 p-4 text-xs shadow-lg backdrop-blur">
+        <div className="absolute bottom-4 left-4 z-[500] w-64 rounded-xl border border-slate-200 bg-white/95 p-4 text-xs shadow-lg backdrop-blur">
           <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             <Route className="h-3.5 w-3.5" /> GIS Inspector
           </h3>
@@ -553,6 +445,12 @@ export default function GisStudioPage() {
                 {terrain.avg_slope_pct != null ? ` · ${terrain.avg_slope_pct.toFixed(1)}% avg slope` : ''}
               </span>
             </div>
+          )}
+          {!layersQuery.isLoading && inspector.layerCount === 0 && (
+            <p className="mt-2.5 rounded-lg bg-amber-50 px-2 py-1.5 text-amber-700">
+              No GIS layers yet for this habitation. Try <span className="font-medium">Auto-Populate</span> above, or use the{' '}
+              <span className="font-medium">pin tool</span> to add one by hand.
+            </p>
           )}
         </div>
       </div>
