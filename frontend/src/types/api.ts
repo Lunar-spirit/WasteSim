@@ -32,6 +32,31 @@ export interface TokenResponse {
   expires_in: number
 }
 
+// The backend's user_role enum spells the fourth role POLICY_VIEWER, not
+// VIEWER — kept as-is rather than renamed via a migration against a live
+// enum type; "Viewer" is just its label everywhere in this UI.
+export type UserRole = 'ADMIN' | 'PLANNER' | 'RESEARCHER' | 'POLICY_VIEWER'
+
+export interface CurrentUser {
+  id: string
+  email: string
+  full_name: string
+  role: UserRole
+  is_active: boolean
+  created_at: string
+}
+
+// --- Admin access control ---------------------------------------------------
+
+export interface UserAccess {
+  id: string
+  email: string
+  full_name: string
+  role: UserRole
+  is_active: boolean
+  habitation_ids: string[]
+}
+
 // --- Habitations -------------------------------------------------------------
 
 export type HabitationStatus = 'DRAFT' | 'READY' | 'ARCHIVED'

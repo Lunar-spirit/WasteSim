@@ -9,6 +9,7 @@ import type {
   Comparison,
   ComparisonDeltas,
   ComparisonSeries,
+  CurrentUser,
   EventCatalogueItem,
   EventIn,
   GISLayer,
@@ -33,8 +34,46 @@ import type {
   SimulationResultsResponse,
   SimulationRun,
   TornadoRow,
+  UserAccess,
+  UserRole,
   ValidationReport,
 } from '../types/api'
+
+// --- Current user ------------------------------------------------------------
+
+export async function fetchCurrentUser(): Promise<CurrentUser> {
+  const { data } = await apiClient.get<ApiEnvelope<CurrentUser>>('/api/v1/auth/me')
+  return unwrap(data)
+}
+
+// --- Admin access control ---------------------------------------------------
+
+export async function fetchUsersWithAccess(): Promise<UserAccess[]> {
+  const { data } = await apiClient.get<ApiEnvelope<UserAccess[]>>('/api/v1/admin/access/users')
+  return unwrap(data)
+}
+
+export async function assignPlanner(userId: string, habitationId: string): Promise<void> {
+  const { data } = await apiClient.post<ApiEnvelope<unknown>>('/api/v1/admin/access/assign', {
+    user_id: userId,
+    habitation_id: habitationId,
+  })
+  unwrap(data)
+}
+
+export async function unassignPlanner(userId: string, habitationId: string): Promise<void> {
+  const { data } = await apiClient.delete<ApiEnvelope<unknown>>('/api/v1/admin/access/unassign', {
+    data: { user_id: userId, habitation_id: habitationId },
+  })
+  unwrap(data)
+}
+
+export async function changeUserRole(userId: string, role: UserRole): Promise<CurrentUser> {
+  const { data } = await apiClient.patch<ApiEnvelope<CurrentUser>>(`/api/v1/admin/access/users/${userId}/role`, {
+    role,
+  })
+  return unwrap(data)
+}
 
 export async function fetchHabitations(): Promise<Habitation[]> {
   const { data } = await apiClient.get<ApiEnvelope<Habitation[]>>('/api/v1/habitations')

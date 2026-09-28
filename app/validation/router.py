@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
 from app.core.db import get_db
-from app.core.deps import check_habitation_access, get_current_user
+from app.core.deps import check_editable_by_owner_or_role, check_habitation_access, get_current_user
 from app.habitation.models import AccessLevel
 from app.parameters.models import ParameterDefinition
 from app.parameters.service import get_parameter_set_or_404
@@ -24,7 +24,12 @@ async def validate(
     db: AsyncSession = Depends(get_db),
 ):
     ps = await get_parameter_set_or_404(db, psid)
-    await check_habitation_access(db, current_user, ps.habitation_id, AccessLevel.EDITOR)
+    # A RESEARCHER may validate a private draft they created themselves —
+    # part of the same "ephemeral what-if exploration" capability as
+    # cloning one in the first place (app/parameters/router.py's
+    # create_parameter_set); commit below still requires OWNER, which a
+    # RESEARCHER structurally never has, so this can never lead to a commit.
+    await check_editable_by_owner_or_role(db, current_user, ps.habitation_id, ps.created_by)
     report = await service.validate_parameter_set(db, psid, current_user)
     await db.commit()
     out = ValidationReportOut.model_validate(report, from_attributes=True)

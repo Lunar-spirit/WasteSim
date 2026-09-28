@@ -4,6 +4,7 @@ import L from 'leaflet'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { autoPopulateHabitation, createLayer, fetchHabitation, fetchLayers, fetchMapOverlay, fetchParameterSet } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
+import { useCurrentUser } from '../hooks/useCurrentUser'
 import { attachBasemapWithFallback } from '../lib/basemap'
 import { setDraftPsid } from '../lib/history'
 import type { LayerType, MapOverlay } from '../types/api'
@@ -97,6 +98,7 @@ interface PendingPoint {
 
 export default function GisStudioPage() {
   const { currentHabitationId } = useAppContext()
+  const { isReadOnly } = useCurrentUser()
   const queryClient = useQueryClient()
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
   const mapRef = useRef<L.Map | null>(null)
@@ -306,21 +308,24 @@ export default function GisStudioPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Studio &amp; GIS Digital Twin</h2>
         <div className="flex items-center gap-3">
-          <button
-            type="button"
-            onClick={() => (isPicking ? stopPicking() : setIsPicking(true))}
-            title={isPicking ? 'Stop placing a point' : 'Click the map to drop a point (collection point, treatment facility, or dumpsite)'}
-            aria-pressed={isPicking}
-            className={`flex items-center gap-2 rounded-lg border px-3.5 py-2 text-sm font-medium transition ${
-              isPicking ? 'border-emerald-400 bg-emerald-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
-            }`}
-          >
-            <MapPin className="h-4 w-4" />
-          </button>
+          {!isReadOnly && (
+            <button
+              type="button"
+              onClick={() => (isPicking ? stopPicking() : setIsPicking(true))}
+              title={isPicking ? 'Stop placing a point' : 'Click the map to drop a point (collection point, treatment facility, or dumpsite)'}
+              aria-pressed={isPicking}
+              className={`flex items-center gap-2 rounded-lg border px-3.5 py-2 text-sm font-medium transition ${
+                isPicking ? 'border-emerald-400 bg-emerald-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <MapPin className="h-4 w-4" />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => autoPopulateMutation.mutate()}
-            disabled={autoPopulateMutation.isPending}
+            disabled={autoPopulateMutation.isPending || isReadOnly}
+            title={isReadOnly ? 'Researchers have read-only access and cannot edit official GIS layers' : undefined}
             className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-60"
           >
             {autoPopulateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}

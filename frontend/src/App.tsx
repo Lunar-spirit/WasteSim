@@ -1,9 +1,12 @@
+import { useQueryClient } from '@tanstack/react-query'
 import { Loader2, Sparkles } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
 import { Navigate, Route, HashRouter, Routes } from 'react-router-dom'
 import { AUTH_EXPIRED_EVENT, isAuthenticated, login, register } from './api/client'
 import Layout from './components/Layout'
 import { AppProvider } from './context/AppContext'
+import { useCurrentUser } from './hooks/useCurrentUser'
+import AdminAccessPage from './pages/AdminAccessPage'
 import ComparisonPage from './pages/ComparisonPage'
 import GisStudioPage from './pages/GisStudioPage'
 import OptimizationPage from './pages/OptimizationPage'
@@ -137,17 +140,41 @@ function LoginScreen({ onLoggedIn }: { onLoggedIn: () => void }) {
   )
 }
 
+function AdminRoute({ children }: { children: ReactNode }) {
+  const { isAdmin, isLoading } = useCurrentUser()
+  if (isLoading) return null
+  if (!isAdmin) return <Navigate to="/simulation" replace />
+  return <>{children}</>
+}
+
 export default function App() {
   const [authed, setAuthed] = useState(isAuthenticated())
+  const queryClient = useQueryClient()
 
   useEffect(() => {
-    const handler = () => setAuthed(false)
+    // Logout (manual or a lapsed refresh token) and login/register both
+    // flip `authed` — but React Query's cache is keyed by query name, not
+    // by which user is signed in. Without clearing it here, switching
+    // accounts in the same tab (e.g. an admin signing out and a researcher
+    // signing in) can briefly serve the previous user's cached /auth/me
+    // role, habitation list, etc. to the new session.
+    const handler = () => {
+      queryClient.clear()
+      setAuthed(false)
+    }
     window.addEventListener(AUTH_EXPIRED_EVENT, handler)
     return () => window.removeEventListener(AUTH_EXPIRED_EVENT, handler)
-  }, [])
+  }, [queryClient])
 
   if (!authed) {
-    return <LoginScreen onLoggedIn={() => setAuthed(true)} />
+    return (
+      <LoginScreen
+        onLoggedIn={() => {
+          queryClient.clear()
+          setAuthed(true)
+        }}
+      />
+    )
   }
 
   return (
@@ -164,6 +191,14 @@ export default function App() {
             <Route path="/optimization" element={<OptimizationPage />} />
             <Route path="/comparison" element={<ComparisonPage />} />
             <Route path="/reports" element={<ReportsPage />} />
+            <Route
+              path="/admin/access"
+              element={
+                <AdminRoute>
+                  <AdminAccessPage />
+                </AdminRoute>
+              }
+            />
             <Route path="*" element={<Navigate to="/simulation" replace />} />
           </Route>
         </Routes>

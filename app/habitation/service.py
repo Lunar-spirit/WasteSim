@@ -87,7 +87,12 @@ async def create_habitation(
 
 
 async def list_habitations(db: AsyncSession, user: User) -> list[Habitation]:
-    if user.role == UserRole.ADMIN:
+    # ADMIN sees everything by role; RESEARCHER/POLICY_VIEWER ("VIEWER" in
+    # the access-control spec) are explicitly read-only across *every*
+    # habitation regardless of status, same as check_habitation_access's
+    # bypass for a read (VIEWER-level) check — without this, a RESEARCHER
+    # could GET a DRAFT habitation directly by id but never see it listed.
+    if user.role in (UserRole.ADMIN, UserRole.RESEARCHER, UserRole.POLICY_VIEWER):
         stmt = select(Habitation).where(Habitation.deleted_at.is_(None))
     else:
         member_ids = select(HabitationMember.habitation_id).where(HabitationMember.user_id == user.id)

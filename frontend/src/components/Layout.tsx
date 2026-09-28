@@ -2,12 +2,14 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
   CloudRain,
+  Eye,
   FileText,
   GitCompare,
   LayoutDashboard,
   LogOut,
   Map as MapIcon,
   Plus,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Target,
@@ -17,6 +19,7 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { fetchHabitations } from '../api/endpoints'
 import { logout } from '../api/client'
 import { useAppContext } from '../context/AppContext'
+import { useCurrentUser } from '../hooks/useCurrentUser'
 import ChatDrawer from './ChatDrawer'
 import CreateHabitationModal from './CreateHabitationModal'
 
@@ -31,9 +34,13 @@ const NAV_ITEMS = [
   { to: '/reports', label: 'Reports', icon: FileText },
 ]
 
+const ADMIN_NAV_ITEM = { to: '/admin/access', label: 'Access Control', icon: ShieldCheck }
+
 function Header() {
   const { currentHabitationId, setCurrentHabitationId, setActiveRunId, setIsCopilotOpen } = useAppContext()
   const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const { isAdmin, isReadOnly } = useCurrentUser()
+  const navItems = isAdmin ? [...NAV_ITEMS, ADMIN_NAV_ITEM] : NAV_ITEMS
 
   const habitationsQuery = useQuery({
     queryKey: ['habitations'],
@@ -81,6 +88,15 @@ function Header() {
         </div>
 
         <div className="flex items-center gap-2">
+          {isReadOnly && (
+            <span
+              title="Researchers have read-only access: run simulations and sensitivity sweeps, but cannot commit parameters, edit official GIS layers, or delete runs."
+              className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700"
+            >
+              <Eye className="h-3.5 w-3.5" />
+              Read-Only / Research Mode
+            </span>
+          )}
           <button
             type="button"
             onClick={() => setIsCopilotOpen(true)}
@@ -102,7 +118,7 @@ function Header() {
       </div>
 
       <nav className="flex items-center gap-1 overflow-x-auto px-6 pb-2">
-        {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+        {navItems.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
