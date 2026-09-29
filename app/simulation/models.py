@@ -41,6 +41,20 @@ class RunStatus(str, enum.Enum):
     CANCELLED = "CANCELLED"
 
 
+class EngineMode(str, enum.Enum):
+    """THEORETICAL: the engine starts purely from the declared parameter
+    set, as every run always has. DATA_DRIVEN_HYBRID: app/analytics/
+    recalibration.py computes empirical overrides from daily_waste_logs
+    and merges them into params/coeffs before the (unmodified, still pure
+    — rule #8) engine runs — see app/simulation/service.py's execute_run().
+    Not a DB column: stored inside simulation_runs.config, the same JSONB
+    knob every other run-level override (capex_policy, plan_added_vehicles,
+    ...) already uses, so no migration is needed for it."""
+
+    THEORETICAL = "THEORETICAL"
+    DATA_DRIVEN_HYBRID = "DATA_DRIVEN_HYBRID"
+
+
 class StepGranularity(str, enum.Enum):
     MONTHLY = "MONTHLY"
 

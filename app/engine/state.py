@@ -67,11 +67,22 @@ def initial_state(params: dict, coeffs: Coefficients, config: dict | None = None
 
     population = float(demography["population"])
 
-    per_capita = baseline.get("per_capita_generation_kg_day")
-    if per_capita is None:
-        # BR-05: the missing one is derived from the other using population.
-        total_tpd = float(baseline["total_generation_tpd"])
-        per_capita = (total_tpd * 1000.0) / population if population else 0.0
+    # DATA_DRIVEN_HYBRID mode (app/analytics/recalibration.py, called from
+    # app/simulation/service.py's execute_run() — never from here): the
+    # caller has already computed a real per-capita figure from
+    # daily_waste_logs and hands it in as plain config, same shape as every
+    # other override this function already reads. Still a pure function of
+    # its arguments either way — rule #8 is about this module never doing
+    # its own I/O, not about who computed the numbers it's given.
+    override_per_capita = config.get("override_starting_per_capita_kg_day")
+    if override_per_capita is not None:
+        per_capita = float(override_per_capita)
+    else:
+        per_capita = baseline.get("per_capita_generation_kg_day")
+        if per_capita is None:
+            # BR-05: the missing one is derived from the other using population.
+            total_tpd = float(baseline["total_generation_tpd"])
+            per_capita = (total_tpd * 1000.0) / population if population else 0.0
 
     composition = normalize_composition(baseline.get("composition") or {"organic": 100.0})
 

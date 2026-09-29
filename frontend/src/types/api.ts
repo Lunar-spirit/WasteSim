@@ -121,6 +121,7 @@ export interface SimulationCreatePayload {
   horizon_years?: number
   label?: string
   param_overrides?: Record<string, number | string>
+  engine_mode?: EngineMode
 }
 
 // One row of simulation_yearly — exact lowercase column names, per the
@@ -555,4 +556,97 @@ export interface ComparisonDeltaRow {
 export interface ComparisonDeltas {
   base_run_id: string
   deltas: Record<string, ComparisonDeltaRow[]>
+}
+
+// --- Daily Waste Logs --------------------------------------------------------
+
+export type AnomalyFlag = 'NORMAL' | 'MONSOON_FLOOD' | 'FESTIVAL_SURGE' | 'WORKER_STRIKE' | 'BREAKDOWN'
+
+export interface DailyLog {
+  id: string
+  habitation_id: string
+  logged_by: string
+  log_date: string
+  total_collected_tonnes: number
+  organic_tonnes: number
+  dry_recyclable_tonnes: number
+  hazardous_tonnes: number | null
+  vehicles_deployed: number
+  trips_completed: number
+  diesel_consumed_litres: number | null
+  collection_coverage_pct_observed: number | null
+  anomaly_flag: AnomalyFlag
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface DailyLogIn {
+  log_date: string
+  total_collected_tonnes: number
+  organic_tonnes: number
+  dry_recyclable_tonnes: number
+  hazardous_tonnes?: number | null
+  vehicles_deployed: number
+  trips_completed: number
+  diesel_consumed_litres?: number | null
+  collection_coverage_pct_observed?: number | null
+  anomaly_flag?: AnomalyFlag
+  notes?: string | null
+}
+
+export interface DailyLogPage {
+  items: DailyLog[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface BulkImportRowError {
+  row_number: number
+  message: string
+}
+
+export interface BulkImportResult {
+  total_rows: number
+  created_count: number
+  updated_count: number
+  error_count: number
+  errors: BulkImportRowError[]
+}
+
+// --- Recalibration / DATA_DRIVEN_HYBRID -------------------------------------
+
+export type EngineMode = 'THEORETICAL' | 'DATA_DRIVEN_HYBRID'
+
+export interface MovingAverage {
+  window_days: number
+  sample_days: number
+  avg_total_collected_tpd: number | null
+  avg_organic_tpd: number | null
+  avg_dry_recyclable_tpd: number | null
+  avg_vehicles_deployed: number | null
+  avg_coverage_pct_observed: number | null
+}
+
+export interface VarianceMetric {
+  label: string
+  theoretical: number | null
+  empirical: number | null
+  variance_pct: number | null
+}
+
+export interface RecalibrationReport {
+  habitation_id: string
+  as_of: string
+  logged_day_count_90d: number
+  moving_average_30d: MovingAverage
+  moving_average_90d: MovingAverage
+  moving_average_annual: MovingAverage
+  total_generation_variance: VarianceMetric
+  per_capita_variance: VarianceMetric
+  segregation_variance: VarianceMetric
+  fleet_efficiency_variance: VarianceMetric
+  derived_festival_multiplier: number | null
+  notes: string[]
 }

@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
   CloudRain,
+  ClipboardList,
   Eye,
   FileText,
   GitCompare,
@@ -25,6 +26,7 @@ import CreateHabitationModal from './CreateHabitationModal'
 
 const NAV_ITEMS = [
   { to: '/gis', label: 'GIS Studio', icon: MapIcon },
+  { to: '/daily-tracker', label: 'Daily Waste Tracker', icon: ClipboardList },
   { to: '/parameters', label: 'Parameters', icon: SlidersHorizontal },
   { to: '/simulation', label: 'Simulation & Budget', icon: LayoutDashboard },
   { to: '/scenarios', label: 'Scenarios', icon: CloudRain },

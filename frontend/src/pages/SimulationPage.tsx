@@ -36,7 +36,7 @@ import {
 import { useAppContext } from '../context/AppContext'
 import { setDraftPsid } from '../lib/history'
 import { formatCrores, formatInr } from '../lib/format'
-import type { BudgetLine, ReportStatus, RunStatus, SimulationYearly } from '../types/api'
+import type { BudgetLine, EngineMode, ReportStatus, RunStatus, SimulationYearly } from '../types/api'
 import AnalyticsTab from '../components/reports/AnalyticsTab'
 
 const HORIZON_YEARS = 20
@@ -248,6 +248,7 @@ export default function SimulationPage() {
   const [vehicleCount, setVehicleCount] = useState(4)
   const [coveragePct, setCoveragePct] = useState(85)
   const [annualBudgetInr, setAnnualBudgetInr] = useState(25_00_000)
+  const [engineMode, setEngineMode] = useState<EngineMode>('THEORETICAL')
   const [autoPopulateStatus, setAutoPopulateStatus] = useState<string | null>(null)
 
   const autoPopulateMutation = useMutation({
@@ -282,6 +283,7 @@ export default function SimulationPage() {
           'community_infrastructure.collection_coverage_pct': coveragePct,
           'economic_conditions.swm_annual_budget': annualBudgetInr,
         },
+        engine_mode: engineMode,
       }),
     onSuccess: (run) => setActiveRunId(run.id),
   })
@@ -376,6 +378,23 @@ export default function SimulationPage() {
           <label className="flex flex-col gap-1 text-sm">
             <span className="font-medium text-slate-700">Annual SWM budget (INR)</span>
             <input type="number" step="10000" min="0" value={annualBudgetInr} onChange={(e) => setAnnualBudgetInr(Number(e.target.value))} className="rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="font-medium text-slate-700">Engine mode</span>
+            <select
+              value={engineMode}
+              onChange={(e) => setEngineMode(e.target.value as EngineMode)}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            >
+              <option value="THEORETICAL">Theoretical (declared parameters)</option>
+              <option value="DATA_DRIVEN_HYBRID">Data-driven hybrid (recalibrated from logs)</option>
+            </select>
+            {engineMode === 'DATA_DRIVEN_HYBRID' && (
+              <span className="text-[11px] text-slate-400">
+                Starts from the 90-day moving average of daily logs instead of the declared baseline, when
+                there's enough history — falls back to theoretical otherwise.
+              </span>
+            )}
           </label>
         </div>
 

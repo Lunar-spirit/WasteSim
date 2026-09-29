@@ -3,6 +3,7 @@ import type {
   ApiEnvelope,
   BudgetLine,
   BudgetSummary,
+  BulkImportResult,
   ChatMessage,
   ChatSession,
   CommitResult,
@@ -10,6 +11,9 @@ import type {
   ComparisonDeltas,
   ComparisonSeries,
   CurrentUser,
+  DailyLog,
+  DailyLogIn,
+  DailyLogPage,
   EventCatalogueItem,
   EventIn,
   GISLayer,
@@ -25,6 +29,7 @@ import type {
   ParameterDefinition,
   ParameterSet,
   ParameterSetDetail,
+  RecalibrationReport,
   ReportDownload,
   ReportResponse,
   RunFinding,
@@ -424,5 +429,49 @@ export async function sendChatQuery(
     message,
     run_id: runId,
   })
+  return unwrap(data)
+}
+
+// --- Daily Waste Logs --------------------------------------------------------
+
+export async function fetchDailyLogs(
+  habitationId: string,
+  params: { from_date?: string; to_date?: string; page?: number; page_size?: number } = {},
+): Promise<DailyLogPage> {
+  const { data } = await apiClient.get<ApiEnvelope<DailyLogPage>>(
+    `/api/v1/habitations/${habitationId}/daily-logs`,
+    { params },
+  )
+  return unwrap(data)
+}
+
+export async function upsertDailyLog(
+  habitationId: string,
+  payload: DailyLogIn,
+): Promise<DailyLog & { created: boolean }> {
+  const { data } = await apiClient.post<ApiEnvelope<DailyLog & { created: boolean }>>(
+    `/api/v1/habitations/${habitationId}/daily-logs`,
+    payload,
+  )
+  return unwrap(data)
+}
+
+export async function bulkImportDailyLogsCsv(habitationId: string, file: File): Promise<BulkImportResult> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await apiClient.post<ApiEnvelope<BulkImportResult>>(
+    `/api/v1/habitations/${habitationId}/daily-logs/bulk-csv`,
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  )
+  return unwrap(data)
+}
+
+// --- Recalibration -----------------------------------------------------------
+
+export async function fetchRecalibrationReport(habitationId: string): Promise<RecalibrationReport> {
+  const { data } = await apiClient.get<ApiEnvelope<RecalibrationReport>>(
+    `/api/v1/habitations/${habitationId}/recalibration-report`,
+  )
   return unwrap(data)
 }

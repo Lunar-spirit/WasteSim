@@ -253,6 +253,25 @@ def test_pathological_coefficient_does_not_crash_the_run():
         assert math.isfinite(m["opex_inr"])
 
 
+def test_override_starting_per_capita_replaces_baseline_value():
+    # DATA_DRIVEN_HYBRID mode's one engine-facing hook (app/engine/state.py):
+    # the caller (app/analytics/recalibration.py, via app/simulation/
+    # service.py) can hand in an empirical starting per-capita figure that
+    # wins over waste_baseline.per_capita_generation_kg_day, with growth/
+    # elasticity compounding forward from it exactly as normal afterwards.
+    baseline_result = run(BASE_PARAMS, events=[], coeffs_raw={}, months=1)
+    assert baseline_result["monthly"][0]["per_capita_kg_day"] == pytest.approx(0.45, rel=1e-2)
+
+    overridden_result = run(
+        BASE_PARAMS, events=[], coeffs_raw={}, months=1, config={"override_starting_per_capita_kg_day": 0.62}
+    )
+    # Not exactly 0.62: month 1's own elasticity-driven step still applies
+    # on top of the override, same as it would on top of a baseline value —
+    # a generous tolerance here just confirms "starts near the override",
+    # not "the engine skips its own Part 2 math for month 1".
+    assert overridden_result["monthly"][0]["per_capita_kg_day"] == pytest.approx(0.62, rel=1e-2)
+
+
 def test_a_240_month_run_completes_well_under_50ms():
     import time
 

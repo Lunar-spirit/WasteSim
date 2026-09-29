@@ -15,7 +15,17 @@ from app.engine.run import run as engine_run
 from app.habitation.models import Habitation, HabitationStatus
 from app.parameters.models import ParameterDefinition, ParameterSet, ParameterSetStatus
 from app.parameters.service import get_parameter_set_full
-from app.simulation.models import CoefficientSet, RunFinding, RunStatus, RunType, SimulationResult, SimulationRun, SimulationYearly
+from app.simulation.models import (
+    CoefficientSet,
+    EngineMode,
+    FindingSeverity,
+    RunFinding,
+    RunStatus,
+    RunType,
+    SimulationResult,
+    SimulationRun,
+    SimulationYearly,
+)
 
 DEFAULT_COEFFICIENT_SET_NAME = "india-coastal-v1"
 
@@ -94,6 +104,11 @@ async def create_run(
 
     await _validate_overrides(db, payload.param_overrides)
 
+    # engine_mode is a typed API field but lives inside the same free-form
+    # config JSONB every other run-level knob (capex_policy, plan_added_*)
+    # already uses — no dedicated column, no migration.
+    run_config = {**payload.config, "engine_mode": payload.engine_mode.value}
+
     if payload.run_type == RunType.BASE:
         existing = await db.scalar(
             select(SimulationRun).where(
@@ -103,6 +118,13 @@ async def create_run(
                 SimulationRun.run_type == RunType.BASE,
                 SimulationRun.horizon_years == payload.horizon_years,
                 SimulationRun.param_overrides == payload.param_overrides,
+                # config must match too: two runs identical except for
+                # engine_mode (or capex_policy, or any other config knob)
+                # are NOT the same run — without this, requesting a
+                # DATA_DRIVEN_HYBRID run right after an identical
+                # THEORETICAL one would silently hand back the old
+                # THEORETICAL result instead of actually recalibrating.
+                SimulationRun.config == run_config,
                 SimulationRun.status.in_([RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.COMPLETED]),
             )
             .order_by(SimulationRun.created_at.desc())
@@ -119,7 +141,7 @@ async def create_run(
         label=payload.label,
         horizon_years=payload.horizon_years,
         param_overrides=payload.param_overrides,
-        config=payload.config,
+        config=run_config,
         status=RunStatus.QUEUED,
         created_by=user.id,
     )
@@ -214,8 +236,40 @@ async def execute_run(db: AsyncSession, run: SimulationRun) -> None:
     scenario_events = await get_events_for_run(db, run.id)
     events = events_to_engine_format(scenario_events)
 
+    run_config = dict(run.config)
+    coeffs_raw = dict(coeff_set.coefficients)
+    recalibration_notes: list[str] = []
+    if run_config.get("engine_mode") == EngineMode.DATA_DRIVEN_HYBRID.value:
+        # app/analytics/recalibration.py does its own DB queries here, in
+        # the caller — never inside app/engine/, which stays a plain-dict-
+        # in/plain-dict-out function with no I/O either way (rule #8).
+        from app.analytics.recalibration import hybrid_mode_overrides
+
+        config_overrides, coeffs_overrides, recalibration_notes = await hybrid_mode_overrides(
+            db, run.habitation_id, params, load_coefficients(coeffs_raw)
+        )
+        run_config.update(config_overrides)
+        coeffs_raw.update(coeffs_overrides)
+        if not config_overrides and not coeffs_overrides:
+            recalibration_notes.append(
+                "DATA_DRIVEN_HYBRID requested but no empirical overrides were applied — "
+                "not enough daily_waste_logs history yet; this run is theoretical in all but name."
+            )
+
     months = run.horizon_years * 12
-    result = engine_run(params, events=events, coeffs_raw=coeff_set.coefficients, months=months, config=run.config)
+    result = engine_run(params, events=events, coeffs_raw=coeffs_raw, months=months, config=run_config)
+
+    for note in recalibration_notes:
+        db.add(
+            RunFinding(
+                run_id=run.id,
+                code="DATA_DRIVEN_RECALIBRATION",
+                severity=FindingSeverity.INFO,
+                numeric_value=None,
+                year_index=None,
+                message=note,
+            )
+        )
 
     for snapshot in result["monthly"]:
         db.add(_result_row(run.id, snapshot))

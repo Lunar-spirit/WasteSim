@@ -8,6 +8,7 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from app.analytics.router import router as analytics_router
 from app.audit.router import router as audit_router
 from app.auth.access_router import router as access_router
 from app.auth.router import router as auth_router
@@ -79,6 +80,7 @@ app.include_router(gis_router)
 app.include_router(daily_logs_router)
 app.include_router(ingestion_router)
 app.include_router(simulation_router)
+app.include_router(analytics_router)
 app.include_router(budget_router)
 app.include_router(scenario_router)
 app.include_router(optimization_router)
