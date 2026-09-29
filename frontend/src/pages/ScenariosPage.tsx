@@ -7,11 +7,13 @@ import {
   fetchMapOverlay,
   listScenarioEvents,
   listSimulations,
+  previewComparativeImpact,
   previewEventImpact,
 } from '../api/endpoints'
+import ComparativeImpactDashboard from '../components/scenario/ComparativeImpactDashboard'
 import { useAppContext } from '../context/AppContext'
 import { useSelectedBaseRun } from '../lib/baseRun'
-import type { EventType } from '../types/api'
+import type { EventSeverity, EventType } from '../types/api'
 
 const EVENT_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   FLOOD: Waves,
@@ -19,8 +21,8 @@ const EVENT_ICONS: Record<string, React.ComponentType<{ className?: string }>> =
   LANDSLIDE: Zap,
 }
 
-function severityFromIntensity(pct: number): 'MILD' | 'MODERATE' | 'SEVERE' {
-  if (pct < 34) return 'MILD'
+function severityFromIntensity(pct: number): EventSeverity {
+  if (pct < 34) return 'LOW'
   if (pct < 67) return 'MODERATE'
   return 'SEVERE'
 }
@@ -67,6 +69,24 @@ export default function ScenariosPage() {
       if (!boundaryGeometry) throw new Error('No habitation boundary geometry available to preview against')
       return previewEventImpact(effectiveBaseRunId as string, selectedEventType, boundaryGeometry)
     },
+  })
+
+  // Instant base-vs-shocked comparison (POST /api/v1/scenarios/preview) —
+  // persists nothing, computed synchronously — triggered by both buttons
+  // below, independent of previewMutation (the existing spatial-only
+  // "what would this touch" preview) and createMutation (a real, saved
+  // SCENARIO run).
+  const comparativeMutation = useMutation({
+    mutationFn: () =>
+      previewComparativeImpact({
+        habitation_id: currentHabitationId,
+        base_run_id: effectiveBaseRunId as string,
+        event_type: selectedEventType,
+        severity_intensity: severity,
+        duration_weeks: durationWeeks,
+        start_month: startMonth,
+        apply_full_boundary: useBoundaryArea,
+      }),
   })
 
   const createMutation = useMutation({
@@ -180,7 +200,10 @@ export default function ScenariosPage() {
           <div className="mt-2 flex gap-2">
             <button
               type="button"
-              onClick={() => previewMutation.mutate()}
+              onClick={() => {
+                previewMutation.mutate()
+                comparativeMutation.mutate()
+              }}
               disabled={!effectiveBaseRunId || !boundaryGeometry || previewMutation.isPending}
               className="flex flex-1 items-center justify-center gap-2 rounded-lg border border-sky-300 bg-sky-50 px-4 py-2.5 text-sm font-medium text-sky-700 transition hover:bg-sky-100 disabled:opacity-60"
             >
@@ -189,7 +212,10 @@ export default function ScenariosPage() {
             </button>
             <button
               type="button"
-              onClick={() => createMutation.mutate()}
+              onClick={() => {
+                createMutation.mutate()
+                comparativeMutation.mutate()
+              }}
               disabled={!effectiveBaseRunId || createMutation.isPending}
               className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
             >
@@ -242,6 +268,12 @@ export default function ScenariosPage() {
           </ul>
         </div>
       </div>
+
+      <ComparativeImpactDashboard
+        result={comparativeMutation.data}
+        isLoading={comparativeMutation.isPending}
+        error={comparativeMutation.error as Error | null}
+      />
     </div>
   )
 }

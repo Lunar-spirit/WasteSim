@@ -1,12 +1,15 @@
 import { apiClient, unwrap } from './client'
 import type {
   ApiEnvelope,
+  AutoPopulateResult,
   BudgetLine,
   BudgetSummary,
   BulkImportResult,
   ChatMessage,
   ChatSession,
   CommitResult,
+  ComparativePreviewIn,
+  ComparativePreviewResult,
   Comparison,
   ComparisonDeltas,
   ComparisonSeries,
@@ -152,8 +155,8 @@ export async function fetchBudgetSummary(runId: string): Promise<BudgetSummary> 
   return unwrap(data)
 }
 
-export async function autoPopulateHabitation(habitationId: string): Promise<Record<string, unknown>> {
-  const { data } = await apiClient.post<ApiEnvelope<Record<string, unknown>>>(
+export async function autoPopulateHabitation(habitationId: string): Promise<AutoPopulateResult> {
+  const { data } = await apiClient.post<ApiEnvelope<AutoPopulateResult>>(
     `/api/v1/habitations/${habitationId}/auto-populate`,
     {},
   )
@@ -307,6 +310,11 @@ export async function previewEventImpact(
     `/api/v1/simulations/${runId}/events/preview`,
     { event_type: eventType, affected_area: affectedArea },
   )
+  return unwrap(data)
+}
+
+export async function previewComparativeImpact(payload: ComparativePreviewIn): Promise<ComparativePreviewResult> {
+  const { data } = await apiClient.post<ApiEnvelope<ComparativePreviewResult>>('/api/v1/scenarios/preview', payload)
   return unwrap(data)
 }
 

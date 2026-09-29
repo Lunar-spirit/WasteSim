@@ -409,12 +409,17 @@ export interface EventCatalogueItem {
   magnitude_source: string
 }
 
+// Matches app/scenario/models.py's EventSeverity exactly — a prior 'MILD'
+// here (instead of 'LOW') meant every low-intensity "Run Full Scenario"
+// click sent a value the backend's Pydantic enum rejected outright (400).
+export type EventSeverity = 'LOW' | 'MODERATE' | 'SEVERE'
+
 export interface EventIn {
   event_type: EventType
   start_month: number
   duration_months: number
   recovery_months: number
-  severity: 'MILD' | 'MODERATE' | 'SEVERE'
+  severity: EventSeverity
   affected_area?: Record<string, unknown> | null
   impact_params?: Record<string, unknown>
 }
@@ -648,5 +653,73 @@ export interface RecalibrationReport {
   segregation_variance: VarianceMetric
   fleet_efficiency_variance: VarianceMetric
   derived_festival_multiplier: number | null
+  notes: string[]
+}
+
+// --- Auto-populate -----------------------------------------------------------
+
+export type RoadDiagnosticsStatus = 'SUCCESS' | 'NO_DATA_FOUND' | 'ERROR'
+
+export interface RoadDiagnostics {
+  status: RoadDiagnosticsStatus
+  reason: string | null
+  // [lat, lon] pairs, Overpass's own coordinate order — exactly what was
+  // sent to the poly: filter, for spotting a lat/lon-vs-lon/lat mismatch.
+  query_boundary_ring: number[][] | null
+  overpass_raw_node_count: number | null
+  overpass_raw_way_count: number | null
+  overpass_raw_relation_count: number | null
+  parsed_linestring_count: number | null
+  total_length_km: number | null
+  gis_layer_id: string | null
+}
+
+export interface SkippedCategory {
+  category: string
+  reason: string
+}
+
+export interface AutoPopulateResult {
+  parameter_set_id: string
+  automated_categories: string[]
+  skipped_categories: SkippedCategory[]
+  derived_fields: string[]
+  manual_fields_remaining: string[]
+  gis_layer_id: string | null
+  road_diagnostics: RoadDiagnostics
+}
+
+// --- Comparative scenario preview --------------------------------------------
+
+export interface ComparativePreviewIn {
+  habitation_id: string
+  base_run_id: string
+  event_type: EventType
+  severity_intensity: EventSeverity
+  duration_weeks: number
+  start_month: number
+  apply_full_boundary: boolean
+  custom_polygon_geojson?: Record<string, unknown> | null
+}
+
+export interface ComparativePreviewPoint {
+  month: number
+  base_collected_tpd: number
+  scenario_collected_tpd: number
+  base_opex_inr: number
+  scenario_opex_inr: number
+  uncollected_backlog_tonnes: number
+}
+
+export interface ComparativePreviewResult {
+  event_type: EventType
+  severity_intensity: EventSeverity
+  duration_months: number
+  start_month: number
+  horizon_months: number
+  series: ComparativePreviewPoint[]
+  peak_backlog_tonnes: number
+  net_financial_penalty_inr: number
+  recovery_time_weeks: number | null
   notes: string[]
 }

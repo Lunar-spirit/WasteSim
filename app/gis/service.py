@@ -408,7 +408,22 @@ async def list_layers(db: AsyncSession, habitation_id: uuid.UUID) -> list[GISLay
     result = await db.scalars(
         select(GISLayer).where(GISLayer.habitation_id == habitation_id).order_by(GISLayer.created_at.desc())
     )
-    return list(result)
+    layers = list(result)
+
+    # Self-heal at read time rather than trust the stored column: a layer
+    # created before _compute_total_length_km existed (or before whatever
+    # future fix changes this computation again) would otherwise show
+    # total_length_km=NULL forever with no backfill migration ever run
+    # against it — exactly what happened to a real "Shirva main road" layer
+    # in this deployment's own data (feature_count=1, a real LineString
+    # feature in gis_features, total_length_km left NULL since the row
+    # predates the fix). Recomputed in-memory only (no db.commit() in this
+    # read path) — cheap (an indexed EXISTS + SUM per layer) and always
+    # correct, so the inspector card never again depends on a write-time
+    # computation actually having run for every layer that now exists.
+    for layer in layers:
+        layer.total_length_km = await _compute_total_length_km(db, layer.id)
+    return layers
 
 
 async def get_layer_or_404(db: AsyncSession, layer_id: uuid.UUID) -> GISLayer:

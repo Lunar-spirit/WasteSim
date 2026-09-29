@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Check, Factory, Loader2, MapPin, MapPinOff, Mountain, Route, Sparkles, Trash2, X } from 'lucide-react'
+import { AlertTriangle, Check, Factory, Loader2, MapPin, MapPinOff, Mountain, Route, Sparkles, Trash2, X } from 'lucide-react'
 import L from 'leaflet'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { autoPopulateHabitation, createLayer, fetchHabitation, fetchLayers, fetchMapOverlay, fetchParameterSet } from '../api/endpoints'
@@ -7,7 +7,7 @@ import { useAppContext } from '../context/AppContext'
 import { useCurrentUser } from '../hooks/useCurrentUser'
 import { attachBasemapWithFallback } from '../lib/basemap'
 import { setDraftPsid } from '../lib/history'
-import type { LayerType, MapOverlay } from '../types/api'
+import type { LayerType, MapOverlay, RoadDiagnostics } from '../types/api'
 
 const LAYER_COLOURS: Record<string, string> = {
   ROAD: '#334155',
@@ -107,6 +107,8 @@ export default function GisStudioPage() {
 
   const [visibleTypes, setVisibleTypes] = useState<Set<LayerType>>(() => new Set(LAYER_TOGGLES.map((t) => t.type)))
   const [autoPopulateStatus, setAutoPopulateStatus] = useState<string | null>(null)
+  const [autoPopulateStage, setAutoPopulateStage] = useState<string | null>(null)
+  const [roadDiagnosticsAlert, setRoadDiagnosticsAlert] = useState<RoadDiagnostics | null>(null)
 
   // --- Click-to-place point picker ------------------------------------------
   const [isPicking, setIsPicking] = useState(false)
@@ -148,15 +150,36 @@ export default function GisStudioPage() {
   })
 
   const autoPopulateMutation = useMutation({
-    mutationFn: () => autoPopulateHabitation(currentHabitationId),
+    mutationFn: () => {
+      // The request is a single synchronous round trip (app/automation/
+      // router.py — everything runs concurrently server-side, not a 202
+      // background job), so there's no real per-stage progress to poll for;
+      // this is a one-shot "what's happening" message for the wait, not a
+      // literal multi-step tracker.
+      setAutoPopulateStage('Querying OpenStreetMap for roads, and rainfall/terrain services...')
+      return autoPopulateHabitation(currentHabitationId)
+    },
     onSuccess: (result) => {
-      const automated = (result.automated_categories as string[] | undefined) ?? []
-      const skipped = (result.skipped_categories as { category: string }[] | undefined) ?? []
+      const automated = result.automated_categories
+      const skipped = result.skipped_categories
+      const diag = result.road_diagnostics
+
+      if (diag.status === 'SUCCESS' && diag.total_length_km !== null) {
+        setAutoPopulateStage(
+          `Ingested ${diag.parsed_linestring_count ?? 0} road feature(s) (${diag.total_length_km.toFixed(2)} km).`,
+        )
+      } else {
+        setAutoPopulateStage(null)
+      }
       setAutoPopulateStatus(
         `Auto-populated ${automated.length} field(s)` +
-          (skipped.length ? `, skipped ${skipped.length} (external service unavailable)` : ''),
+          (skipped.length ? `, skipped ${skipped.length} (see below)` : ''),
       )
-      const psid = result.parameter_set_id as string | undefined
+      if (diag.status !== 'SUCCESS') {
+        setRoadDiagnosticsAlert(diag)
+      }
+
+      const psid = result.parameter_set_id
       if (psid) {
         setDraftPsid(currentHabitationId, psid)
         queryClient.invalidateQueries({ queryKey: ['parameter-set', psid] })
@@ -165,7 +188,10 @@ export default function GisStudioPage() {
       queryClient.invalidateQueries({ queryKey: ['gis-layers', currentHabitationId] })
       queryClient.invalidateQueries({ queryKey: ['habitation', currentHabitationId] })
     },
-    onError: (error: Error) => setAutoPopulateStatus(`Auto-populate failed: ${error.message}`),
+    onError: (error: Error) => {
+      setAutoPopulateStage(null)
+      setAutoPopulateStatus(`Auto-populate failed: ${error.message}`)
+    },
   })
 
   function clearPin() {
@@ -334,6 +360,18 @@ export default function GisStudioPage() {
           {overlayQuery.isFetching && <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />}
         </div>
       </div>
+      {autoPopulateMutation.isPending && autoPopulateStage && (
+        <p className="flex items-center gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs text-sky-700">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          {autoPopulateStage}
+        </p>
+      )}
+      {!autoPopulateMutation.isPending && autoPopulateStage && (
+        <p className="flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs text-emerald-700">
+          <Check className="h-3.5 w-3.5" />
+          {autoPopulateStage}
+        </p>
+      )}
       {autoPopulateStatus && <p className="text-xs text-slate-500">{autoPopulateStatus}</p>}
       {isPicking && !pendingPoint && (
         <p className="flex items-center gap-1.5 text-xs text-emerald-700">
@@ -459,6 +497,46 @@ export default function GisStudioPage() {
           )}
         </div>
       </div>
+
+      {roadDiagnosticsAlert && (
+        <div className="fixed inset-0 z-[1000] flex items-start justify-center bg-slate-900/20 pt-24">
+          <div className="w-full max-w-xs rounded-lg border border-slate-200 bg-white p-3.5 shadow-lg">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+              <div className="min-w-0 flex-1">
+                <h3 className="text-xs font-semibold text-slate-900">
+                  Road length is {roadDiagnosticsAlert.total_length_km?.toFixed(2) ?? '0.00'} km
+                </h3>
+                <p className="mt-0.5 text-xs text-slate-600">{roadDiagnosticsAlert.reason}</p>
+                <p className="mt-1.5 text-[11px] text-slate-400">
+                  Overpass: {roadDiagnosticsAlert.overpass_raw_node_count ?? 0} nodes,{' '}
+                  {roadDiagnosticsAlert.overpass_raw_way_count ?? 0} ways ·{' '}
+                  {roadDiagnosticsAlert.parsed_linestring_count ?? 0} parsed
+                </p>
+
+                {roadDiagnosticsAlert.query_boundary_ring && (
+                  <details className="mt-1.5">
+                    <summary className="cursor-pointer text-[11px] font-medium text-slate-500 hover:text-slate-700">
+                      Boundary queried
+                    </summary>
+                    <pre className="mt-1 max-h-20 overflow-auto rounded bg-slate-900 p-1.5 text-[10px] text-slate-100">
+                      {JSON.stringify(roadDiagnosticsAlert.query_boundary_ring)}
+                    </pre>
+                  </details>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setRoadDiagnosticsAlert(null)}
+                title="Close"
+                className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

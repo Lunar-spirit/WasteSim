@@ -31,10 +31,29 @@ REAL_ROAD_BOUNDARY = {
 _TERRAIN_RESULT = {"avg_slope_pct": 12.5, "terrain_type": "HILLY", "min_elevation_m": 120.0}
 _COASTAL_TERRAIN_RESULT = {"avg_slope_pct": 1.2, "terrain_type": "COASTAL_PLAINS", "min_elevation_m": 2.0}
 _ROAD_RESULT = {
+    "status": "SUCCESS",
+    "reason": None,
     "road_network_km": 4.2,
     "geojson_features": [
         {"type": "Feature", "properties": {}, "geometry": {"type": "LineString", "coordinates": [[74.80, 13.35], [74.81, 13.35]]}}
     ],
+    "parsed_linestring_count": 1,
+    "query_boundary_ring": [[13.34, 74.79], [13.34, 74.82], [13.36, 74.82], [13.36, 74.79], [13.34, 74.79]],
+    "overpass_raw_node_count": 2,
+    "overpass_raw_way_count": 1,
+    "overpass_raw_relation_count": 0,
+}
+_NO_DATA_ROAD_RESULT = {
+    "status": "NO_DATA_FOUND",
+    "reason": "Overpass returned 0 raw elements (0 nodes, 0 ways, 0 relations) for this boundary polygon — "
+    "check coordinate order (lat/lon vs lon/lat) or that the query wasn't rate-limited/timed out silently.",
+    "road_network_km": 0.0,
+    "geojson_features": [],
+    "parsed_linestring_count": 0,
+    "query_boundary_ring": [[13.34, 74.79], [13.34, 74.82], [13.36, 74.82], [13.36, 74.79], [13.34, 74.79]],
+    "overpass_raw_node_count": 0,
+    "overpass_raw_way_count": 0,
+    "overpass_raw_relation_count": 0,
 }
 _RAINFALL_RESULT = 2800.0
 
@@ -104,6 +123,75 @@ async def test_auto_populate_writes_road_layer_and_km_with_mocked_fetch(client, 
     road_layer = next(layer for layer in layers if layer["id"] == data["gis_layer_id"])
     assert road_layer["layer_type"] == "ROAD"
     assert road_layer["source"] == "OSM_OVERPASS"
+
+
+async def test_auto_populate_road_diagnostics_report_success_with_real_length(client, planner_headers, db_session):
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "AutoDiagSuccessVille", boundary_geojson=REAL_ROAD_BOUNDARY)
+
+    with _mock_all_fetches():
+        resp = await client.post(f"/api/v1/habitations/{habitation_id}/auto-populate", json={}, headers=planner_headers)
+    assert resp.status_code == 200, resp.text
+    diag = resp.json()["data"]["road_diagnostics"]
+
+    assert diag["status"] == "SUCCESS"
+    assert diag["overpass_raw_node_count"] == 2
+    assert diag["overpass_raw_way_count"] == 1
+    assert diag["parsed_linestring_count"] == 1
+    assert diag["query_boundary_ring"] is not None
+    assert diag["gis_layer_id"] == resp.json()["data"]["gis_layer_id"]
+    # PostGIS ST_Length(geography(geom))-computed, read back from the
+    # persisted layer — not just echoing the mocked GeoPandas figure (4.2).
+    assert diag["total_length_km"] is not None
+    assert diag["total_length_km"] != 4.2
+
+
+async def test_auto_populate_road_no_data_found_is_explicit_not_silent(client, planner_headers):
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "AutoDiagNoDataVille", boundary_geojson=REAL_ROAD_BOUNDARY)
+
+    with (
+        patch("app.automation.service._fetch_road_network", new=AsyncMock(return_value=_NO_DATA_ROAD_RESULT)),
+        patch("app.automation.service._fetch_annual_rainfall", new=AsyncMock(return_value=_RAINFALL_RESULT)),
+        patch("app.automation.service._fetch_terrain", new=AsyncMock(return_value=_TERRAIN_RESULT)),
+    ):
+        resp = await client.post(f"/api/v1/habitations/{habitation_id}/auto-populate", json={}, headers=planner_headers)
+    assert resp.status_code == 200, resp.text  # never a bare empty 200 — the diagnostics carry the real story
+    data = resp.json()["data"]
+
+    assert data["gis_layer_id"] is None
+    assert "gis_layers.ROAD" not in data["automated_categories"]
+    diag = data["road_diagnostics"]
+    assert diag["status"] == "NO_DATA_FOUND"
+    assert "coordinate order" in diag["reason"]
+    assert diag["overpass_raw_node_count"] == 0
+    assert diag["overpass_raw_way_count"] == 0
+    assert diag["query_boundary_ring"] is not None
+    # Also surfaced through the existing skipped_categories list, so nothing
+    # that already reads that list loses visibility into the failure.
+    skipped = {s["category"]: s["reason"] for s in data["skipped_categories"]}
+    assert "community_infrastructure.road_network_km" in skipped
+    assert skipped["community_infrastructure.road_network_km"] == diag["reason"]
+
+
+async def test_auto_populate_road_error_path_reports_boundary_ring_too(client, planner_headers):
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "AutoDiagErrorVille", boundary_geojson=REAL_ROAD_BOUNDARY)
+
+    async def _boom(*args, **kwargs):
+        raise TimeoutError("simulated upstream timeout")
+
+    with (
+        patch("app.automation.service._fetch_road_network", new=AsyncMock(side_effect=_boom)),
+        patch("app.automation.service._fetch_annual_rainfall", new=AsyncMock(return_value=_RAINFALL_RESULT)),
+        patch("app.automation.service._fetch_terrain", new=AsyncMock(return_value=_TERRAIN_RESULT)),
+    ):
+        resp = await client.post(f"/api/v1/habitations/{habitation_id}/auto-populate", json={}, headers=planner_headers)
+    assert resp.status_code == 200, resp.text
+    diag = resp.json()["data"]["road_diagnostics"]
+    assert diag["status"] == "ERROR"
+    assert diag["reason"]
+    # Even on a hard failure, the exact boundary that was about to be
+    # queried is still reported — enough to debug a coordinate-order bug
+    # without needing a successful Overpass round trip first.
+    assert diag["query_boundary_ring"] is not None
 
 
 async def test_auto_populate_sets_coastal_buffer_when_terrain_is_coastal(client, planner_headers, db_session):
