@@ -18,6 +18,7 @@ from app.comparison.router import router as comparison_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import RequestContextMiddleware
+from app.daily_logs.router import router as daily_logs_router
 from app.gis.router import router as gis_router
 from app.habitation.router import router as habitation_router
 from app.ingestion.router import router as ingestion_router
@@ -75,6 +76,7 @@ app.include_router(habitation_router)
 app.include_router(parameters_router)
 app.include_router(validation_router)
 app.include_router(gis_router)
+app.include_router(daily_logs_router)
 app.include_router(ingestion_router)
 app.include_router(simulation_router)
 app.include_router(budget_router)
