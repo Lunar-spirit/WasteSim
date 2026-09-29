@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import AsyncSessionLocal, WorkerSessionLocal
 from app.optimization.models import AnalysisStatus, OptimizationRun
-from app.optimization.service import run_search
+from app.optimization.service import format_worker_failure, run_search
 from app.workers.celery_app import celery_app
 
 
@@ -37,7 +37,7 @@ async def run_optimization(
                 failed = await failure_db.get(OptimizationRun, uuid.UUID(optimization_id))
                 if failed is not None:
                     failed.status = AnalysisStatus.FAILED
-                    failed.infeasible_reason = f"{type(exc).__name__}: {exc}"
+                    failed.infeasible_reason = format_worker_failure(exc)
                     await failure_db.commit()
             raise
 

@@ -514,6 +514,21 @@ export interface OptimizationRun {
   notes?: string[]
 }
 
+export interface OptimizationReadinessChecks {
+  base_simulation_exists: boolean
+  parameters_validated: boolean
+  worker_available: boolean
+  gis_roads_ready: boolean
+}
+
+export interface OptimizationReadiness {
+  can_run: boolean
+  blocking_reason: string | null
+  action_label: string | null
+  action_tab: string | null
+  checks: OptimizationReadinessChecks
+}
+
 export interface OptimizationCandidate {
   id: number
   stage: string
@@ -618,6 +633,17 @@ export interface BulkImportResult {
   updated_count: number
   error_count: number
   errors: BulkImportRowError[]
+}
+
+export type ExportPeriodType = 'monthly' | 'yearly' | 'custom'
+
+export interface DailyLogExportParams {
+  period_type: ExportPeriodType
+  year?: number
+  month?: number
+  start_date?: string
+  end_date?: string
+  format?: 'csv' | 'xlsx'
 }
 
 // --- Recalibration / DATA_DRIVEN_HYBRID -------------------------------------

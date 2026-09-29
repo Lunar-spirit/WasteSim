@@ -1,13 +1,15 @@
 import uuid
 from datetime import date
+from typing import Literal
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import write_audit_log
-from app.auth.models import User
+from app.auth.models import User, UserRole
 from app.core.db import get_db
-from app.core.deps import check_habitation_access, get_current_user
+from app.core.deps import check_habitation_access, get_current_user, require_role
 from app.daily_logs import service
 from app.daily_logs.schemas import BulkImportResult, DailyLogIn, DailyLogOut, DailyLogPage
 from app.habitation.models import AccessLevel
@@ -78,3 +80,36 @@ async def list_daily_logs(
         items=[DailyLogOut.model_validate(i) for i in items], total=total, page=page, page_size=page_size
     )
     return {"success": True, "data": page_out.model_dump(mode="json")}
+
+
+@router.get("/api/v1/habitations/{habitation_id}/daily-logs/export")
+async def export_daily_logs(
+    habitation_id: uuid.UUID,
+    request: Request,
+    period_type: Literal["monthly", "yearly", "custom"] = Query(...),
+    year: int | None = Query(default=None),
+    month: int | None = Query(default=None, ge=1, le=12),
+    start_date: date | None = Query(default=None),
+    end_date: date | None = Query(default=None),
+    export_format: Literal["csv", "xlsx"] = Query(default="csv", alias="format"),
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
+    db: AsyncSession = Depends(get_db),
+):
+    file_bytes, media_type, filename, content_disposition = await service.export_daily_logs(
+        db, habitation_id, period_type, year, month, start_date, end_date, export_format
+    )
+    await write_audit_log(
+        db,
+        request.state.request_id,
+        current_user.id,
+        "EXPORT",
+        "daily_waste_log",
+        str(habitation_id),
+        {"period_type": period_type, "year": year, "month": month, "format": export_format},
+    )
+    await db.commit()
+    return StreamingResponse(
+        iter([file_bytes]),
+        media_type=media_type,
+        headers={"Content-Disposition": content_disposition},
+    )

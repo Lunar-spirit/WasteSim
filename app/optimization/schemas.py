@@ -38,6 +38,21 @@ class OptimizationRunOut(BaseModel):
     completed_at: datetime | None
 
 
+class OptimizationReadinessChecks(BaseModel):
+    base_simulation_exists: bool
+    parameters_validated: bool
+    worker_available: bool
+    gis_roads_ready: bool
+
+
+class OptimizationReadinessOut(BaseModel):
+    can_run: bool
+    blocking_reason: str | None
+    action_label: str | None
+    action_tab: str | None
+    checks: OptimizationReadinessChecks
+
+
 class OptimizationCandidateOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 

@@ -15,6 +15,7 @@ import type {
   ComparisonSeries,
   CurrentUser,
   DailyLog,
+  DailyLogExportParams,
   DailyLogIn,
   DailyLogPage,
   EventCatalogueItem,
@@ -28,6 +29,7 @@ import type {
   OptimizationCandidate,
   OptimizationCreateResult,
   OptimizationExplanation,
+  OptimizationReadiness,
   OptimizationRun,
   ParameterDefinition,
   ParameterSet,
@@ -346,6 +348,13 @@ export async function fetchSensitivityTornado(analysisId: string): Promise<Torna
 
 // --- Optimization ------------------------------------------------------------
 
+export async function fetchOptimizationReadiness(habitationId: string): Promise<OptimizationReadiness> {
+  const { data } = await apiClient.get<ApiEnvelope<OptimizationReadiness>>(
+    `/api/v1/habitations/${habitationId}/optimization/readiness`,
+  )
+  return unwrap(data)
+}
+
 export async function createOptimization(
   habitationId: string,
   baseRunId: string,
@@ -473,6 +482,24 @@ export async function bulkImportDailyLogsCsv(habitationId: string, file: File): 
     { headers: { 'Content-Type': 'multipart/form-data' } },
   )
   return unwrap(data)
+}
+
+/** The export endpoint returns a raw file (CSV/XLSX), not the usual
+ * {success, data} envelope, so this bypasses `unwrap` and reads the
+ * filename straight off the Content-Disposition header the backend sets. */
+export async function exportDailyLogs(
+  habitationId: string,
+  params: DailyLogExportParams,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await apiClient.get(`/api/v1/habitations/${habitationId}/daily-logs/export`, {
+    params,
+    responseType: 'blob',
+  })
+  const disposition = (response.headers['content-disposition'] as string | undefined) ?? ''
+  const match = /filename="?([^"]+)"?/.exec(disposition)
+  const fallbackExt = params.format === 'xlsx' ? 'xlsx' : 'csv'
+  const filename = match?.[1] ?? `daily_logs.${fallbackExt}`
+  return { blob: response.data as Blob, filename }
 }
 
 // --- Recalibration -----------------------------------------------------------

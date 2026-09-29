@@ -1,12 +1,12 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { AlertTriangle, Loader2, Save, Upload } from 'lucide-react'
+import { AlertTriangle, Download, Loader2, Save, Upload } from 'lucide-react'
 import { useRef, useState } from 'react'
-import { bulkImportDailyLogsCsv, fetchDailyLogs, upsertDailyLog } from '../api/endpoints'
+import { bulkImportDailyLogsCsv, exportDailyLogs, fetchDailyLogs, upsertDailyLog } from '../api/endpoints'
 import CalibrationDiscrepancyCard from '../components/analytics/CalibrationDiscrepancyCard'
 import { useAppContext } from '../context/AppContext'
 import { useCurrentUser } from '../hooks/useCurrentUser'
 import { formatTonnes } from '../lib/format'
-import type { AnomalyFlag, BulkImportResult, DailyLogIn } from '../types/api'
+import type { AnomalyFlag, BulkImportResult, DailyLogExportParams, DailyLogIn } from '../types/api'
 
 const ANOMALY_OPTIONS: { value: AnomalyFlag; label: string }[] = [
   { value: 'NORMAL', label: 'Normal' },
@@ -43,10 +43,109 @@ function optionalNumberField(value: string): number | null {
   return value.trim() === '' ? null : Number(value)
 }
 
+const MONTH_OPTIONS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+]
+
+/** Downloads a blob response the way a real `<a download>` click would —
+ * needed because the export request has to carry the bearer auth header,
+ * so it can't just be a plain anchor href straight at the API URL. */
+function triggerBrowserDownload(blob: Blob, filename: string) {
+  const url = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
+}
+
+function ExportLogsModal({ habitationId, onClose }: { habitationId: string; onClose: () => void }) {
+  const currentYear = new Date().getFullYear()
+  const [year, setYear] = useState(currentYear)
+  const [month, setMonth] = useState<number | 'ALL'>('ALL')
+
+  const exportMutation = useMutation({
+    mutationFn: () => {
+      const params: DailyLogExportParams =
+        month === 'ALL'
+          ? { period_type: 'yearly', year, format: 'csv' }
+          : { period_type: 'monthly', year, month, format: 'csv' }
+      return exportDailyLogs(habitationId, params)
+    },
+    onSuccess: ({ blob, filename }) => {
+      triggerBrowserDownload(blob, filename)
+      onClose()
+    },
+  })
+
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-slate-900/40 p-4">
+      <div className="w-full max-w-sm rounded-2xl bg-white p-6 shadow-2xl">
+        <h3 className="text-sm font-semibold text-slate-800">Download logs</h3>
+        <p className="mt-1 text-xs text-slate-500">Export the operational log for a year or a single month as CSV.</p>
+
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="font-medium text-slate-700">Year</span>
+            <input
+              type="number"
+              value={year}
+              onChange={(e) => setYear(numberField(e.target.value))}
+              className="rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="font-medium text-slate-700">Month</span>
+            <select
+              value={month}
+              onChange={(e) => setMonth(e.target.value === 'ALL' ? 'ALL' : Number(e.target.value))}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            >
+              <option value="ALL">All year</option>
+              {MONTH_OPTIONS.map((name, idx) => (
+                <option key={name} value={idx + 1}>
+                  {name}
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+
+        {exportMutation.isError && (
+          <p className="mt-3 text-xs text-red-600">{(exportMutation.error as Error).message}</p>
+        )}
+
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-600 hover:bg-slate-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => exportMutation.mutate()}
+            disabled={exportMutation.isPending}
+            className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+          >
+            {exportMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+            Download CSV
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function DailyWasteTrackerPage() {
   const { currentHabitationId } = useAppContext()
-  const { isReadOnly } = useCurrentUser()
+  const { isReadOnly, isAdmin } = useCurrentUser()
   const queryClient = useQueryClient()
+  const [showExportModal, setShowExportModal] = useState(false)
   const [form, setForm] = useState<DailyLogIn>(EMPTY_FORM)
   const [bulkResult, setBulkResult] = useState<BulkImportResult | null>(null)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
@@ -84,13 +183,29 @@ export default function DailyWasteTrackerPage() {
 
   return (
     <div className="flex flex-col gap-6 p-6">
-      <div>
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Daily Waste Tracker</h2>
-        <p className="mt-1 text-sm text-slate-500">
-          Field-recorded collection data — what the crew actually collected, separate from the declared
-          parameters the simulation starts from.
-        </p>
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Daily Waste Tracker</h2>
+          <p className="mt-1 text-sm text-slate-500">
+            Field-recorded collection data — what the crew actually collected, separate from the declared
+            parameters the simulation starts from.
+          </p>
+        </div>
+        {isAdmin && (
+          <button
+            type="button"
+            onClick={() => setShowExportModal(true)}
+            className="flex shrink-0 items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-700 shadow-sm hover:bg-slate-50"
+          >
+            <Download className="h-4 w-4" />
+            Download Logs
+          </button>
+        )}
       </div>
+
+      {showExportModal && (
+        <ExportLogsModal habitationId={currentHabitationId} onClose={() => setShowExportModal(false)} />
+      )}
 
       <CalibrationDiscrepancyCard habitationId={currentHabitationId} />
 

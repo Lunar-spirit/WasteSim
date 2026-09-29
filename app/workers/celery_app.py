@@ -70,3 +70,18 @@ celery_app.conf.update(
     worker_prefetch_multiplier=1,
     task_default_retry_delay=10,
 )
+
+
+def ping_workers(timeout: float = 1.0) -> bool:
+    """Best-effort check that at least one Celery worker process is alive and
+    consuming from the broker — not just that Redis itself is reachable. Used
+    by readiness/pre-flight endpoints (e.g. optimization readiness) so a
+    banner can say "queue is offline" instead of leaving a run stuck QUEUED
+    with no explanation. Synchronous (control.inspect().ping() blocks on the
+    broker round trip) — callers on the async request path must run this in
+    a thread, not await it directly."""
+    try:
+        pong = celery_app.control.inspect(timeout=timeout).ping()
+        return bool(pong)
+    except Exception:
+        return False

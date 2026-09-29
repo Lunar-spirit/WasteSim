@@ -189,3 +189,118 @@ async def test_bulk_csv_missing_required_column_rejected(client, admin_headers):
     resp = await client.post(f"/api/v1/habitations/{habitation_id}/daily-logs/bulk-csv", headers=admin_headers, files=files)
     assert resp.status_code == 422, resp.text
     assert resp.json()["error"]["code"] == "DAILY_LOG_CSV_MISSING_COLUMNS"
+
+
+async def test_export_requires_admin(client, admin_headers, planner_headers):
+    habitation_id = await _create_habitation(client, admin_headers, "ExportAuthVille")
+    resp = await client.get(
+        f"/api/v1/habitations/{habitation_id}/daily-logs/export",
+        headers=planner_headers,
+        params={"period_type": "yearly", "year": 2026},
+    )
+    assert resp.status_code == 403, resp.text
+    assert resp.json()["error"]["code"] == "FORBIDDEN_ROLE"
+
+
+async def test_export_yearly_requires_year(client, admin_headers):
+    habitation_id = await _create_habitation(client, admin_headers, "ExportNoYearVille")
+    resp = await client.get(
+        f"/api/v1/habitations/{habitation_id}/daily-logs/export",
+        headers=admin_headers,
+        params={"period_type": "yearly"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "EXPORT_YEAR_REQUIRED"
+
+
+async def test_export_monthly_requires_year_and_month(client, admin_headers):
+    habitation_id = await _create_habitation(client, admin_headers, "ExportNoMonthVille")
+    resp = await client.get(
+        f"/api/v1/habitations/{habitation_id}/daily-logs/export",
+        headers=admin_headers,
+        params={"period_type": "monthly", "year": 2026},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "EXPORT_YEAR_MONTH_REQUIRED"
+
+
+async def test_export_custom_requires_both_dates(client, admin_headers):
+    habitation_id = await _create_habitation(client, admin_headers, "ExportNoRangeVille")
+    resp = await client.get(
+        f"/api/v1/habitations/{habitation_id}/daily-logs/export",
+        headers=admin_headers,
+        params={"period_type": "custom", "start_date": "2026-01-01"},
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "EXPORT_RANGE_REQUIRED"
+
+
+async def test_export_monthly_csv_filters_correctly_and_includes_summary_row(client, admin_headers):
+    habitation_id = await _create_habitation(client, admin_headers, "ExportMonthlyVille")
+    # Two days inside March, one outside (April) — must not appear in a March export.
+    for log_date, total in (("2026-03-05", 10.0), ("2026-03-15", 14.0), ("2026-04-01", 99.0)):
+        payload = {**VALID_LOG, "log_date": log_date, "total_collected_tonnes": total}
+        resp = await client.post(f"/api/v1/habitations/{habitation_id}/daily-logs", headers=admin_headers, json=payload)
+        assert resp.status_code == 200, resp.text
+
+    resp = await client.get(
+        f"/api/v1/habitations/{habitation_id}/daily-logs/export",
+        headers=admin_headers,
+        params={"period_type": "monthly", "year": 2026, "month": 3},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/csv")
+    assert "ExportMonthlyVille" in resp.headers["content-disposition"]
+    assert "2026_03" in resp.headers["content-disposition"]
+
+    lines = resp.text.strip().splitlines()
+    header = lines[0].split(",")
+    assert header == [
+        "Date",
+        "Habitation Name",
+        "Logged By (Email)",
+        "Total Collected (t)",
+        "Organic (t)",
+        "Dry Recyclable (t)",
+        "Hazardous (t)",
+        "Vehicles Deployed",
+        "Trips Completed",
+        "Diesel Consumed (L)",
+        "Observed Coverage (%)",
+        "Anomaly / Notes",
+    ]
+    # header + 2 March rows + 1 summary row, April excluded entirely
+    assert len(lines) == 4
+    assert "2026-03-05" in lines[1]
+    assert "2026-03-15" in lines[2]
+    assert "99.0" not in resp.text  # the April row's total never appears
+
+    summary_row = lines[3].split(",")
+    assert summary_row[0] == "TOTAL / AVERAGE"
+    assert float(summary_row[3]) == 24.0  # 10.0 + 14.0
+
+
+async def test_export_custom_range_and_xlsx_format(client, admin_headers):
+    habitation_id = await _create_habitation(client, admin_headers, "ExportXlsxVille")
+    for log_date in ("2026-06-01", "2026-06-10"):
+        payload = {**VALID_LOG, "log_date": log_date}
+        resp = await client.post(f"/api/v1/habitations/{habitation_id}/daily-logs", headers=admin_headers, json=payload)
+        assert resp.status_code == 200, resp.text
+
+    resp = await client.get(
+        f"/api/v1/habitations/{habitation_id}/daily-logs/export",
+        headers=admin_headers,
+        params={"period_type": "custom", "start_date": "2026-06-01", "end_date": "2026-06-30", "format": "xlsx"},
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert resp.content[:2] == b"PK"  # xlsx is a real zip archive, not a renamed CSV
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(io.BytesIO(resp.content))
+    ws = wb.active
+    rows = list(ws.iter_rows(values_only=True))
+    assert rows[0][0] == "Date"
+    assert len(rows) == 4  # header + 2 logged days + summary row
+    assert rows[-1][0] == "TOTAL / AVERAGE"
