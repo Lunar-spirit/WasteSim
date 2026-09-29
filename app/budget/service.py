@@ -59,11 +59,19 @@ def build_budget_lines(
         add(CostKind.OPEX, CostCategory.TRANSPORT, transport * inflation_factor)
         add(CostKind.OPEX, CostCategory.ADMIN, admin * inflation_factor)
 
-        if month["vehicles_added_this_month"]:
+        # Growth purchases and like-for-like replacements are both money
+        # spent buying vehicles — same FLEET_PURCHASE line — so this stays
+        # in sync with capex_inr's own (added + replaced) * vehicle_capex,
+        # engine-side (app/engine/step.py Part 9/10), without a second
+        # CostCategory the design doesn't distinguish either.
+        fleet_vehicles_this_month = month["vehicles_added_this_month"] + month.get(
+            "vehicles_replaced_this_month", 0
+        )
+        if fleet_vehicles_this_month:
             add(
                 CostKind.CAPEX,
                 CostCategory.FLEET_PURCHASE,
-                month["vehicles_added_this_month"] * coeffs["vehicle_capex"],
+                fleet_vehicles_this_month * coeffs["vehicle_capex"],
             )
         if month["capacity_added_this_month"]:
             add(

@@ -31,6 +31,7 @@ import type {
   ScenarioEvent,
   SensitivityAnalysis,
   SimulationCreatePayload,
+  SimulationMonthlyResultsResponse,
   SimulationResultsResponse,
   SimulationRun,
   TornadoRow,
@@ -119,6 +120,14 @@ export async function fetchSimulationResults(runId: string): Promise<SimulationR
   const { data } = await apiClient.get<ApiEnvelope<SimulationResultsResponse>>(
     `/api/v1/simulations/${runId}/results`,
     { params: { aggregate: 'yearly' } },
+  )
+  return unwrap(data)
+}
+
+export async function fetchSimulationMonthlyResults(runId: string): Promise<SimulationMonthlyResultsResponse> {
+  const { data } = await apiClient.get<ApiEnvelope<SimulationMonthlyResultsResponse>>(
+    `/api/v1/simulations/${runId}/results`,
+    { params: { aggregate: 'monthly' } },
   )
   return unwrap(data)
 }

@@ -134,7 +134,13 @@ export interface SimulationYearly {
   treated_tpy: number
   recovered_tpy: number
   landfilled_tpy: number
+  // Null only for a run completed before this breakdown existed — see
+  // migration 0016; every run since always sets a real value.
+  organic_tpy: number | null
+  dry_recyclable_tpy: number | null
+  inert_tpy: number | null
   landfill_remaining_tonnes: number
+  cumulative_landfill_tonnes: number | null
   avg_coverage_pct: number
   peak_vehicle_shortfall: number
   opex_inr: number
@@ -145,9 +151,27 @@ export interface SimulationYearly {
   recovery_rate_pct: number
 }
 
+// One row per run per month — only the fields the charts actually use
+// (app/simulation/models.py's SimulationResult has more; _row_to_dict
+// returns all of them, this just types what this app reads).
+export interface SimulationMonthly {
+  month_index: number
+  year_index: number
+  calendar_month: number
+  waste_total_tpd: number
+  organic_pct: number
+  plastic_pct: number
+  paper_pct: number
+}
+
 export interface SimulationResultsResponse {
   aggregate: 'yearly' | 'monthly'
   series: SimulationYearly[]
+}
+
+export interface SimulationMonthlyResultsResponse {
+  aggregate: 'yearly' | 'monthly'
+  series: SimulationMonthly[]
 }
 
 // --- Reports -----------------------------------------------------------------

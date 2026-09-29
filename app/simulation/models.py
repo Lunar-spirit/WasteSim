@@ -187,7 +187,23 @@ class SimulationYearly(Base):
     treated_tpy: Mapped[float] = mapped_column(Numeric(14, 2))
     recovered_tpy: Mapped[float] = mapped_column(Numeric(14, 2))
     landfilled_tpy: Mapped[float] = mapped_column(Numeric(14, 2))
+    # Total generation for the year split into the same three streams a
+    # multi-decadal yearly projection reports (organic/dry-recyclable/inert
+    # — app/engine/step.py's comment above its Part 5 explains the mapping
+    # from the nine composition fractions). Distinct from treated_tpy/
+    # recovered_tpy/landfilled_tpy above, which are what actually happened
+    # to collected waste, not how much of each material was generated.
+    # Nullable, unlike every other column here: simulation_yearly is
+    # insert-only (rule #2 — a BEFORE UPDATE trigger blocks it at the DB
+    # level), so a run completed before this field existed can never be
+    # backfilled by writing to it after the fact. NULL on those old rows
+    # honestly means "not computed for this run," not zero; every run
+    # since this migration always populates a real value.
+    organic_tpy: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    dry_recyclable_tpy: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
+    inert_tpy: Mapped[float | None] = mapped_column(Numeric(14, 2), nullable=True)
     landfill_remaining_tonnes: Mapped[float] = mapped_column(Numeric(16, 2))
+    cumulative_landfill_tonnes: Mapped[float | None] = mapped_column(Numeric(16, 2), nullable=True)
     avg_coverage_pct: Mapped[float] = mapped_column(Numeric(5, 2))
     peak_vehicle_shortfall: Mapped[int] = mapped_column(SmallInteger)
     opex_inr: Mapped[float] = mapped_column(Numeric(16, 2))

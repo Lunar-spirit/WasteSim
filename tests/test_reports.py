@@ -63,6 +63,41 @@ async def test_pdf_report_generates_and_downloads(client, planner_headers):
     assert len(pdf_resp.content) > 500
 
 
+async def test_pdf_report_with_boundary_includes_charts_and_milestones(client, planner_headers):
+    # A habitation WITH a real boundary this time — exercises
+    # _boundary_geojson_and_bbox / svg.boundary_outline, which the other
+    # PDF test's boundary-less habitation never touches.
+    boundary = {
+        "type": "MultiPolygon",
+        "coordinates": [[[[74.79, 13.34], [74.81, 13.34], [74.81, 13.36], [74.79, 13.36], [74.79, 13.34]]]],
+    }
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "Boundaryville", boundary)
+    run_id = await _make_completed_run(client, planner_headers, habitation_id, horizon_years=20)
+
+    create_resp = await client.post(
+        "/api/v1/reports", json={"run_id": run_id, "format": "PDF"}, headers=planner_headers
+    )
+    report_id = create_resp.json()["data"]["id"]
+    await run_report_generation(report_id, session_factory=TestSessionLocal)
+
+    status_resp = await client.get(f"/api/v1/reports/{report_id}", headers=planner_headers)
+    assert status_resp.json()["data"]["status"] == "READY", status_resp.text
+
+    download_resp = await client.get(f"/api/v1/reports/{report_id}/download", headers=planner_headers)
+    url = download_resp.json()["data"]["url"]
+
+    import httpx
+
+    pdf_resp = httpx.get(url)
+    assert pdf_resp.status_code == 200
+    assert pdf_resp.content[:4] == b"%PDF"
+    # A report with a boundary outline + four embedded SVG charts renders
+    # meaningfully more PDF content than the plain-tables report the other
+    # test checks (> 500 bytes) — not a precise bound, just confirms real
+    # extra content actually made it into the document.
+    assert len(pdf_resp.content) > 3000
+
+
 async def test_xlsx_comparison_report_generates(client, planner_headers):
     habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "XlsxCompareville")
     run_1 = await _make_completed_run(client, planner_headers, habitation_id)

@@ -64,6 +64,15 @@ def aggregate_by_year(history: list[dict[str, Any]], discount_rate: float) -> li
         treated_tpy = sum_tonnes("organic_treated_tpd")
         recovered_tpy = sum_tonnes("recyclables_recovered_tpd")
         landfilled_tpy = sum_tonnes("to_landfill_tpd")
+        # Total generation split three ways (organic/dry-recyclable/inert —
+        # see step.py's comment above its Part 5 for how this maps onto the
+        # nine composition fractions), not what was actually treated/
+        # recovered/landfilled above: this is "how much of each kind of
+        # waste was generated this year," the breakdown a yearly summary
+        # wants, independent of how much collection/treatment kept up with it.
+        organic_tpy = sum_tonnes("organic_tpd")
+        dry_recyclable_tpy = sum_tonnes("dry_recyclable_tpd")
+        inert_tpy = sum_tonnes("inert_tpd")
 
         opex_inr = sum(m["opex_inr"] for m in months)
         capex_inr = sum(m["capex_inr"] for m in months)
@@ -79,7 +88,11 @@ def aggregate_by_year(history: list[dict[str, Any]], discount_rate: float) -> li
                 "treated_tpy": treated_tpy,
                 "recovered_tpy": recovered_tpy,
                 "landfilled_tpy": landfilled_tpy,
+                "organic_tpy": organic_tpy,
+                "dry_recyclable_tpy": dry_recyclable_tpy,
+                "inert_tpy": inert_tpy,
                 "landfill_remaining_tonnes": last["landfill_remaining_tonnes"],
+                "cumulative_landfill_tonnes": last["landfill_cumulative_tonnes"],
                 "avg_coverage_pct": sum(m["collection_coverage_pct"] for m in months) / len(months),
                 "peak_vehicle_shortfall": max(m["vehicle_shortfall"] for m in months),
                 "opex_inr": opex_inr,
