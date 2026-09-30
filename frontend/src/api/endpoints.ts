@@ -5,7 +5,9 @@ import type {
   BudgetLine,
   BudgetSummary,
   BulkImportResult,
+  ChatHistoryTurn,
   ChatMessage,
+  ChatMessageReply,
   ChatSession,
   CommitResult,
   ComparativePreviewIn,
@@ -445,6 +447,21 @@ export async function sendChatQuery(
   const { data } = await apiClient.post<ApiEnvelope<ChatMessage>>(`/api/v1/chat/sessions/${sessionId}/query`, {
     message,
     run_id: runId,
+  })
+  return unwrap(data)
+}
+
+/** The floating copilot's stateless endpoint — no session, no server-side
+ * persistence; the caller resends its own running `history` every call. */
+export async function sendFloatingChatMessage(
+  habitationId: string | null,
+  message: string,
+  history: ChatHistoryTurn[],
+): Promise<ChatMessageReply> {
+  const { data } = await apiClient.post<ApiEnvelope<ChatMessageReply>>('/api/v1/chat/message', {
+    habitation_id: habitationId,
+    message,
+    history,
   })
   return unwrap(data)
 }

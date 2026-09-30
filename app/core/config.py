@@ -39,6 +39,19 @@ class Settings(BaseSettings):
     anthropic_api_key: str | None = None
     anthropic_model: str = "claude-haiku-4-5-20251001"
 
+    # Same "optional by design, deterministic fallback if unset" contract as
+    # anthropic_api_key above — checked in this order (Anthropic, OpenAI,
+    # Ollama) by app/chat/llm_providers.py's call_llm(). Called via plain
+    # httpx (already in the approved stack) rather than adding the `openai`
+    # SDK as a new dependency for a single REST call.
+    openai_api_key: str | None = None
+    openai_model: str = "gpt-4o-mini"
+    # A locally-hosted Ollama server's base URL (e.g. "http://localhost:11434")
+    # — None by default since, unlike the two hosted providers, Ollama has no
+    # key to gate on; its own absence IS the "not configured" signal.
+    ollama_url: str | None = None
+    ollama_model: str = "llama3.1"
+
     # EXT-01/EXT-03 (automation module): all three default to the free,
     # keyless public endpoints, so auto-populate works out of the box.
     # Override with a commercial/high-rate-tier URL or add an API key in

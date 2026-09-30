@@ -270,6 +270,21 @@ export interface ChatMessage {
   created_at: string
 }
 
+// The stateless POST /api/v1/chat/message contract (the floating copilot) —
+// no session to create first; the caller resends its own running history.
+export interface ChatHistoryTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export type ChatReplySource = 'faq' | 'tool' | 'llm' | 'fallback'
+
+export interface ChatMessageReply {
+  content: string
+  citations: ChatCitation[]
+  source: ChatReplySource
+}
+
 // --- Parameters ----------------------------------------------------------
 
 export type ParameterSetStatus = 'DRAFT' | 'VALIDATING' | 'VALIDATED' | 'INVALID' | 'ARCHIVED'

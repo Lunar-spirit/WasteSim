@@ -150,7 +150,7 @@ function Header() {
 }
 
 export default function Layout() {
-  const { setIsCopilotOpen } = useAppContext()
+  const { isCopilotOpen, setIsCopilotOpen } = useAppContext()
 
   useEffect(() => {
     function handler(e: KeyboardEvent) {
@@ -169,6 +169,17 @@ export default function Layout() {
       <main className="flex-1 overflow-y-auto">
         <Outlet />
       </main>
+      {!isCopilotOpen && (
+        <button
+          type="button"
+          onClick={() => setIsCopilotOpen(true)}
+          title="SWMS Assistant (Cmd/Ctrl+K)"
+          aria-label="Open SWMS Assistant"
+          className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg transition hover:scale-105 hover:bg-emerald-700"
+        >
+          <Sparkles className="h-6 w-6" />
+        </button>
+      )}
       <ChatDrawer />
     </div>
   )
