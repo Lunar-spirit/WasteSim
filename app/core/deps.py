@@ -52,12 +52,23 @@ def require_role(*roles: UserRole):
     return dependency
 
 
+# RESEARCHER and POLICY_VIEWER (the design's "VIEWER" role — see
+# app/auth/models.py) are read-only across *every* habitation regardless of
+# status or membership, per the access-control invariants. Gated strictly to
+# read-style checks (min_level == VIEWER) in check_habitation_access below,
+# so this can never let either role satisfy an EDITOR/OWNER (write) check.
+_READ_ANYTHING_ROLES = {UserRole.RESEARCHER, UserRole.POLICY_VIEWER}
+
+
 async def check_habitation_access(
     db: AsyncSession, user: User, habitation_id: uuid.UUID, min_level: AccessLevel
 ) -> None:
-    """ADMIN bypasses membership entirely. Everyone else needs a
+    """ADMIN bypasses membership entirely. RESEARCHER/VIEWER bypass only a
+    read check (min_level VIEWER) the same way. Everyone else needs a
     habitation_members row at >= min_level for this habitation."""
     if user.role == UserRole.ADMIN:
+        return
+    if min_level == AccessLevel.VIEWER and user.role in _READ_ANYTHING_ROLES:
         return
 
     member = await db.scalar(
@@ -82,6 +93,51 @@ def require_habitation_access(min_level: AccessLevel):
         current_user: User = Depends(get_current_user),
         db: AsyncSession = Depends(get_db),
     ) -> User:
+        await check_habitation_access(db, current_user, habitation_id, min_level)
+        return current_user
+
+    return dependency
+
+
+async def check_editable_by_owner_or_role(
+    db: AsyncSession, user: User, habitation_id: uuid.UUID, resource_owner_id: uuid.UUID
+) -> None:
+    """For a resource that tracks who created it (a parameter_set's
+    created_by): a RESEARCHER may write to one they personally created —
+    their "private draft" for cloning/what-if exploration, per the
+    access-control invariants — even with no EDITOR habitation access.
+    Anyone else (and a RESEARCHER touching someone else's resource) still
+    needs the normal EDITOR check, so this can never be used to reach
+    another user's draft or the habitation's official state."""
+    if user.role == UserRole.RESEARCHER and user.id == resource_owner_id:
+        return
+    await check_habitation_access(db, user, habitation_id, AccessLevel.EDITOR)
+
+
+def verify_habitation_access(required_mode: str = "read"):
+    """Named per the access-control spec: `required_mode` is "read" or
+    "write". A thin wrapper over check_habitation_access mapping those onto
+    the existing VIEWER/EDITOR access levels — "write" also rejects any
+    non-PLANNER/ADMIN role outright, so a RESEARCHER can never pass a write
+    check even though they're never given an EDITOR row in the first place.
+    Every /api/v1/habitations/{habitation_id}/* route already enforces the
+    equivalent rule via require_habitation_access(...); this is the same
+    single check_habitation_access() choke point, offered under the
+    requested name for new routes to depend on directly.
+    """
+    if required_mode not in ("read", "write"):
+        raise ValueError(f"required_mode must be 'read' or 'write', got {required_mode!r}")
+
+    async def dependency(
+        habitation_id: uuid.UUID,
+        current_user: User = Depends(get_current_user),
+        db: AsyncSession = Depends(get_db),
+    ) -> User:
+        if required_mode == "write" and current_user.role not in (UserRole.ADMIN, UserRole.PLANNER):
+            raise AppError(
+                "FORBIDDEN_ROLE", "Only an assigned PLANNER (or ADMIN) can modify this habitation", 403
+            )
+        min_level = AccessLevel.EDITOR if required_mode == "write" else AccessLevel.VIEWER
         await check_habitation_access(db, current_user, habitation_id, min_level)
         return current_user
 

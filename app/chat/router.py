@@ -5,11 +5,34 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
 from app.chat import service
-from app.chat.schemas import ChatMessageOut, ChatQueryIn, ChatSessionCreateIn, ChatSessionOut, ChatToolCallOut
+from app.chat.schemas import (
+    ChatMessageIn,
+    ChatMessageOut,
+    ChatMessageReplyOut,
+    ChatQueryIn,
+    ChatSessionCreateIn,
+    ChatSessionOut,
+    ChatToolCallOut,
+)
 from app.core.db import get_db
 from app.core.deps import get_current_user
 
 router = APIRouter(tags=["chat"])
+
+
+@router.post("/api/v1/chat/message")
+async def send_chat_message(
+    payload: ChatMessageIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stateless endpoint for the floating copilot — no session to create
+    first, no messages persisted; the client owns its own history and
+    resends it each call. See app/chat/service.py's answer_chat_message()
+    for the FAQ -> tool -> LLM -> fallback routing."""
+    history = [{"role": turn.role, "content": turn.content} for turn in payload.history]
+    reply = await service.answer_chat_message(db, payload.habitation_id, payload.message, history, current_user)
+    return {"success": True, "data": ChatMessageReplyOut(**reply).model_dump()}
 
 
 @router.post("/api/v1/chat/sessions", status_code=201)

@@ -10,7 +10,13 @@ from app.core.deps import check_habitation_access, get_current_user
 from app.habitation.models import AccessLevel
 from app.habitation.service import ensure_read_access, get_habitation_or_404
 from app.optimization import service
-from app.optimization.schemas import OptimizationCandidateOut, OptimizationCreateIn, OptimizationRunOut, PromoteIn
+from app.optimization.schemas import (
+    OptimizationCandidateOut,
+    OptimizationCreateIn,
+    OptimizationReadinessOut,
+    OptimizationRunOut,
+    PromoteIn,
+)
 from app.simulation.schemas import SimulationRunOut
 from app.workers.tasks_optimize import optimize
 from app.workers.tasks_simulate import simulate
@@ -23,6 +29,18 @@ async def _get_optimization_with_access(db: AsyncSession, optimization_id: uuid.
     habitation = await get_habitation_or_404(db, run.habitation_id)
     await ensure_read_access(db, user, habitation)
     return run
+
+
+@router.get("/api/v1/habitations/{habitation_id}/optimization/readiness")
+async def get_optimization_readiness(
+    habitation_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    habitation = await get_habitation_or_404(db, habitation_id)
+    await ensure_read_access(db, current_user, habitation)
+    readiness = await service.get_optimization_readiness(db, habitation_id)
+    return {"success": True, "data": OptimizationReadinessOut(**readiness).model_dump()}
 
 
 @router.post("/api/v1/habitations/{habitation_id}/optimizations", status_code=202)

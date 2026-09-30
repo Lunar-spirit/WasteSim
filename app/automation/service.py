@@ -36,6 +36,7 @@ from sqlalchemy import cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.auth.models import User
+from app.automation.schemas import RoadDiagnosticsOut
 from app.core.config import settings
 from app.core.deps import check_habitation_access
 from app.core.errors import AppError
@@ -108,12 +109,12 @@ async def _get_habitation_geometry(
 # 1. Road network (Overpass) -> community_infrastructure.road_network_km
 #    + a new ROAD GIS layer.
 # ---------------------------------------------------------------------------
-def _polygon_ring_for_overpass(boundary_geojson: dict[str, Any]) -> str:
-    """Overpass's `poly:` filter takes exactly one ring, "lat1 lon1 lat2
-    lon2 ...". A habitation boundary is a MultiPolygon (project-wide rule);
-    this uses its first polygon's exterior ring — a documented
-    simplification for the (rare) disjoint-multi-part boundary case, since
-    Overpass QL has no multi-ring polygon filter to hand it the rest."""
+def _boundary_ring_lat_lon(boundary_geojson: dict[str, Any]) -> list[list[float]]:
+    """The exterior ring Overpass's poly: filter will be built from, as
+    [lat, lon] pairs (Overpass's own coordinate order) — returned to the
+    caller verbatim as a diagnostic, so a lat/lon-vs-lon/lat mix-up is
+    visible by inspection instead of a guess. See _polygon_ring_for_overpass
+    for the caveat on which ring of a MultiPolygon this is."""
     geom_type = boundary_geojson.get("type")
     if geom_type == "MultiPolygon":
         ring = boundary_geojson["coordinates"][0][0]
@@ -121,7 +122,17 @@ def _polygon_ring_for_overpass(boundary_geojson: dict[str, Any]) -> str:
         ring = boundary_geojson["coordinates"][0]
     else:
         raise AppError("BOUNDARY_UNSUPPORTED", f"Cannot build a road-network query from a {geom_type} boundary", 422)
-    return " ".join(f"{lat} {lon}" for lon, lat in ring)
+    return [[lat, lon] for lon, lat in ring]  # GeoJSON stores [lon, lat]; Overpass wants [lat, lon]
+
+
+def _polygon_ring_for_overpass(boundary_geojson: dict[str, Any]) -> str:
+    """Overpass's `poly:` filter takes exactly one ring, "lat1 lon1 lat2
+    lon2 ...". A habitation boundary is a MultiPolygon (project-wide rule);
+    this uses its first polygon's exterior ring — a documented
+    simplification for the (rare) disjoint-multi-part boundary case, since
+    Overpass QL has no multi-ring polygon filter to hand it the rest."""
+    ring = _boundary_ring_lat_lon(boundary_geojson)
+    return " ".join(f"{lat} {lon}" for lat, lon in ring)
 
 
 def _fetch_road_network_sync(boundary_geojson: dict[str, Any], timeout: float) -> dict[str, Any]:
@@ -164,6 +175,8 @@ def _fetch_road_network_sync(boundary_geojson: dict[str, Any], timeout: float) -
         f'way["highway"~"^(primary|secondary|tertiary|residential|service|unclassified)$"](poly:"{poly}");'
         "out body; >; out skel qt;"
     )
+    boundary_ring = _boundary_ring_lat_lon(boundary_geojson)
+
     with httpx.Client(timeout=timeout, headers=_REQUEST_HEADERS) as client:
         response = client.post(settings.overpass_api_url, data={"data": query})
         response.raise_for_status()
@@ -171,19 +184,60 @@ def _fetch_road_network_sync(boundary_geojson: dict[str, Any], timeout: float) -
 
     nodes: dict[int, tuple[float, float]] = {}
     ways: list[list[int]] = []
+    raw_node_count = 0
+    raw_way_count = 0
+    raw_relation_count = 0
     for element in data.get("elements", []):
-        if element.get("type") == "node":
+        element_type = element.get("type")
+        if element_type == "node":
+            raw_node_count += 1
             nodes[element["id"]] = (element["lon"], element["lat"])
-        elif element.get("type") == "way":
+        elif element_type == "way":
+            raw_way_count += 1
             ways.append(element.get("nodes", []))
+        elif element_type == "relation":
+            raw_relation_count += 1
+
+    diagnostics_base = {
+        "query_boundary_ring": boundary_ring,
+        "overpass_raw_node_count": raw_node_count,
+        "overpass_raw_way_count": raw_way_count,
+        "overpass_raw_relation_count": raw_relation_count,
+    }
 
     lines: list[LineString] = []
     for way_node_ids in ways:
         coords = [nodes[node_id] for node_id in way_node_ids if node_id in nodes]
         if len(coords) >= 2:  # Shapely raises on a 0- or 1-point LineString, so filter first
             lines.append(LineString(coords))
+
     if not lines:
-        return {"road_network_km": 0.0, "geojson_features": []}
+        # Distinguish *why* nothing came back, rather than one flat "0
+        # features": a totally empty response usually means the boundary
+        # polygon (coordinate order, or a genuinely tiny/malformed ring)
+        # didn't match anything at all; raw ways with no usable geometry
+        # means Overpass matched highway ways but the `out skel qt` node
+        # data needed to build their coordinates didn't come back with them.
+        if raw_way_count == 0:
+            reason = (
+                f"Overpass returned 0 raw elements ({raw_node_count} nodes, {raw_way_count} ways, "
+                f"{raw_relation_count} relations) for this boundary polygon — check coordinate order "
+                f"(lat/lon vs lon/lat) or that the query wasn't rate-limited/timed out silently."
+            )
+        else:
+            reason = (
+                f"Overpass matched {raw_way_count} highway way(s) but returned no usable node "
+                f"geometry for any of them ({raw_node_count} nodes total) — the response may have "
+                f"been truncated by the server's own [timeout] before `out skel qt` completed."
+            )
+        return {
+            "status": "NO_DATA_FOUND",
+            "reason": reason,
+            "road_network_km": 0.0,
+            "geojson_features": [],
+            "parsed_linestring_count": 0,
+            **diagnostics_base,
+        }
 
     boundary_geom = shape(boundary_geojson)
     gdf_lines = gpd.GeoDataFrame(geometry=lines, crs="EPSG:4326")
@@ -208,7 +262,33 @@ def _fetch_road_network_sync(boundary_geojson: dict[str, Any], timeout: float) -
         if not geom.is_empty
     ]
 
-    return {"road_network_km": round(total_length_m / 1000.0, 3), "geojson_features": features}
+    if not features:
+        # A different failure mode from raw_way_count == 0 above: Overpass
+        # genuinely matched highway ways, but every one of them fell
+        # entirely outside the habitation boundary once clipped — usually a
+        # boundary/OSM-data mismatch (wrong habitation, or a boundary drawn
+        # somewhere the road data doesn't cover), not a query problem.
+        return {
+            "status": "NO_DATA_FOUND",
+            "reason": (
+                f"Overpass matched {len(lines)} highway way(s), but all fell outside the habitation "
+                f"boundary once clipped to it — check that the boundary and the OSM data describe "
+                f"the same real-world area."
+            ),
+            "road_network_km": 0.0,
+            "geojson_features": [],
+            "parsed_linestring_count": len(lines),
+            **diagnostics_base,
+        }
+
+    return {
+        "status": "SUCCESS",
+        "reason": None,
+        "road_network_km": round(total_length_m / 1000.0, 3),
+        "geojson_features": features,
+        "parsed_linestring_count": len(lines),
+        **diagnostics_base,
+    }
 
 
 async def _fetch_road_network(boundary_geojson: dict[str, Any], timeout: float) -> dict[str, Any]:
@@ -425,28 +505,63 @@ async def auto_populate(db: AsyncSession, habitation_id: uuid.UUID, payload: Any
 
     # --- 1. Roads --------------------------------------------------------
     if isinstance(road_result, BaseException):
+        reason = _skip_reason(road_result)
+        skipped_categories.append({"category": "community_infrastructure.road_network_km", "reason": reason})
+        road_diagnostics = RoadDiagnosticsOut(
+            status="ERROR", reason=reason, query_boundary_ring=_boundary_ring_lat_lon(boundary_geojson)
+        )
+    elif road_result["status"] == "NO_DATA_FOUND":
+        # Per spec: never a silent empty 200 — the reason and the exact
+        # boundary ring queried are always returned, so a coordinate-order
+        # bug or a rate-limited/truncated response is visible immediately
+        # instead of just showing up as "0.00 km" in the inspector.
         skipped_categories.append(
-            {"category": "community_infrastructure.road_network_km", "reason": _skip_reason(road_result)}
+            {"category": "community_infrastructure.road_network_km", "reason": road_result["reason"]}
+        )
+        road_diagnostics = RoadDiagnosticsOut(
+            status="NO_DATA_FOUND",
+            reason=road_result["reason"],
+            query_boundary_ring=road_result["query_boundary_ring"],
+            overpass_raw_node_count=road_result["overpass_raw_node_count"],
+            overpass_raw_way_count=road_result["overpass_raw_way_count"],
+            overpass_raw_relation_count=road_result["overpass_raw_relation_count"],
+            parsed_linestring_count=road_result["parsed_linestring_count"],
         )
     else:
         await upsert_category(
             db, parameter_set.id, "community_infrastructure", {"road_network_km": road_result["road_network_km"]}
         )
         automated_categories.append("community_infrastructure.road_network_km")
-        if road_result["geojson_features"]:
-            layer_payload = LayerUploadIn(
-                layer_name=f"Auto-Ingested OSM Roads ({date.today().isoformat()}-{uuid.uuid4().hex[:6]})",
-                layer_type=LayerType.ROAD,
-                geojson={"type": "FeatureCollection", "features": road_result["geojson_features"]},
+        road_diagnostics = RoadDiagnosticsOut(
+            status="SUCCESS",
+            query_boundary_ring=road_result["query_boundary_ring"],
+            overpass_raw_node_count=road_result["overpass_raw_node_count"],
+            overpass_raw_way_count=road_result["overpass_raw_way_count"],
+            overpass_raw_relation_count=road_result["overpass_raw_relation_count"],
+            parsed_linestring_count=road_result["parsed_linestring_count"],
+        )
+        layer_payload = LayerUploadIn(
+            layer_name=f"Auto-Ingested OSM Roads ({date.today().isoformat()}-{uuid.uuid4().hex[:6]})",
+            layer_type=LayerType.ROAD,
+            geojson={"type": "FeatureCollection", "features": road_result["geojson_features"]},
+        )
+        try:
+            layer = await create_manual_layer(db, habitation_id, layer_payload, user, source=LayerSource.OSM_OVERPASS)
+            gis_layer_id = str(layer.id)
+            automated_categories.append("gis_layers.ROAD")
+            # layer.total_length_km was just computed by create_manual_layer
+            # -> _enforce_boundary_integrity via PostGIS's own
+            # ST_Length(geography(geom)) — the exact number the inspector
+            # card reads, not GeoPandas's independently-computed estimate
+            # above (road_network_km, which only feeds the parameter value).
+            road_diagnostics.total_length_km = (
+                float(layer.total_length_km) if layer.total_length_km is not None else None
             )
-            try:
-                layer = await create_manual_layer(
-                    db, habitation_id, layer_payload, user, source=LayerSource.OSM_OVERPASS
-                )
-                gis_layer_id = str(layer.id)
-                automated_categories.append("gis_layers.ROAD")
-            except AppError as exc:
-                skipped_categories.append({"category": "gis_layers.ROAD", "reason": exc.message})
+            road_diagnostics.gis_layer_id = gis_layer_id
+        except AppError as exc:
+            skipped_categories.append({"category": "gis_layers.ROAD", "reason": exc.message})
+            road_diagnostics.status = "ERROR"
+            road_diagnostics.reason = exc.message
 
     # --- 2. Rainfall -------------------------------------------------------
     if isinstance(rainfall_result, BaseException):
@@ -485,4 +600,10 @@ async def auto_populate(db: AsyncSession, habitation_id: uuid.UUID, payload: Any
         "derived_fields": derived_fields,
         "manual_fields_remaining": manual_fields_remaining,
         "gis_layer_id": gis_layer_id,
+        # Plain dict, not the RoadDiagnosticsOut instance itself: every
+        # other value in this dict is already plain data (this is the
+        # service layer, not the API response layer — app/chat/service.py's
+        # tool-calling path stores this dict straight into a JSONB column,
+        # which a bare Pydantic model instance can't serialize into).
+        "road_diagnostics": road_diagnostics.model_dump(),
     }

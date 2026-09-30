@@ -8,7 +8,9 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from app.analytics.router import router as analytics_router
 from app.audit.router import router as audit_router
+from app.auth.access_router import router as access_router
 from app.auth.router import router as auth_router
 from app.automation.router import router as automation_router
 from app.budget.router import router as budget_router
@@ -17,6 +19,7 @@ from app.comparison.router import router as comparison_router
 from app.core.config import settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import RequestContextMiddleware
+from app.daily_logs.router import router as daily_logs_router
 from app.gis.router import router as gis_router
 from app.habitation.router import router as habitation_router
 from app.ingestion.router import router as ingestion_router
@@ -69,12 +72,15 @@ app.add_middleware(
 register_exception_handlers(app)
 
 app.include_router(auth_router)
+app.include_router(access_router)
 app.include_router(habitation_router)
 app.include_router(parameters_router)
 app.include_router(validation_router)
 app.include_router(gis_router)
+app.include_router(daily_logs_router)
 app.include_router(ingestion_router)
 app.include_router(simulation_router)
+app.include_router(analytics_router)
 app.include_router(budget_router)
 app.include_router(scenario_router)
 app.include_router(optimization_router)

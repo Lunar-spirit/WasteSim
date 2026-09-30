@@ -9,13 +9,4 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
   },
-  // maplibre-gl spins up its own Web Worker internally, constructing the
-  // worker's URL relative to its own module. Vite's dependency
-  // pre-bundling rewrites that module into .vite/deps/maplibre-gl.js,
-  // which breaks that relative URL ("Worker failed to load", found live
-  // in the browser) — excluding it from pre-bundling serves it straight
-  // from node_modules as native ESM instead, where the URL resolves correctly.
-  optimizeDeps: {
-    exclude: ['maplibre-gl'],
-  },
 })

@@ -2,12 +2,15 @@ import { useQuery } from '@tanstack/react-query'
 import {
   Activity,
   CloudRain,
+  ClipboardList,
+  Eye,
   FileText,
   GitCompare,
   LayoutDashboard,
   LogOut,
   Map as MapIcon,
   Plus,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Target,
@@ -17,11 +20,13 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { fetchHabitations } from '../api/endpoints'
 import { logout } from '../api/client'
 import { useAppContext } from '../context/AppContext'
+import { useCurrentUser } from '../hooks/useCurrentUser'
 import ChatDrawer from './ChatDrawer'
 import CreateHabitationModal from './CreateHabitationModal'
 
 const NAV_ITEMS = [
   { to: '/gis', label: 'GIS Studio', icon: MapIcon },
+  { to: '/daily-tracker', label: 'Daily Waste Tracker', icon: ClipboardList },
   { to: '/parameters', label: 'Parameters', icon: SlidersHorizontal },
   { to: '/simulation', label: 'Simulation & Budget', icon: LayoutDashboard },
   { to: '/scenarios', label: 'Scenarios', icon: CloudRain },
@@ -31,9 +36,13 @@ const NAV_ITEMS = [
   { to: '/reports', label: 'Reports', icon: FileText },
 ]
 
+const ADMIN_NAV_ITEM = { to: '/admin/access', label: 'Access Control', icon: ShieldCheck }
+
 function Header() {
   const { currentHabitationId, setCurrentHabitationId, setActiveRunId, setIsCopilotOpen } = useAppContext()
   const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const { isAdmin, isReadOnly } = useCurrentUser()
+  const navItems = isAdmin ? [...NAV_ITEMS, ADMIN_NAV_ITEM] : NAV_ITEMS
 
   const habitationsQuery = useQuery({
     queryKey: ['habitations'],
@@ -81,6 +90,15 @@ function Header() {
         </div>
 
         <div className="flex items-center gap-2">
+          {isReadOnly && (
+            <span
+              title="Researchers have read-only access: run simulations and sensitivity sweeps, but cannot commit parameters, edit official GIS layers, or delete runs."
+              className="flex items-center gap-1.5 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700"
+            >
+              <Eye className="h-3.5 w-3.5" />
+              Read-Only / Research Mode
+            </span>
+          )}
           <button
             type="button"
             onClick={() => setIsCopilotOpen(true)}
@@ -102,7 +120,7 @@ function Header() {
       </div>
 
       <nav className="flex items-center gap-1 overflow-x-auto px-6 pb-2">
-        {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+        {navItems.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}
@@ -132,7 +150,7 @@ function Header() {
 }
 
 export default function Layout() {
-  const { setIsCopilotOpen } = useAppContext()
+  const { isCopilotOpen, setIsCopilotOpen } = useAppContext()
 
   useEffect(() => {
     function handler(e: KeyboardEvent) {
@@ -151,6 +169,17 @@ export default function Layout() {
       <main className="flex-1 overflow-y-auto">
         <Outlet />
       </main>
+      {!isCopilotOpen && (
+        <button
+          type="button"
+          onClick={() => setIsCopilotOpen(true)}
+          title="SWMS Assistant (Cmd/Ctrl+K)"
+          aria-label="Open SWMS Assistant"
+          className="fixed bottom-6 right-6 z-40 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-600 text-white shadow-lg transition hover:scale-105 hover:bg-emerald-700"
+        >
+          <Sparkles className="h-6 w-6" />
+        </button>
+      )}
       <ChatDrawer />
     </div>
   )

@@ -12,6 +12,7 @@ import {
   validateParameterSet,
 } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
+import { useCurrentUser } from '../hooks/useCurrentUser'
 import { clearDraftPsid, getDraftPsid, setDraftPsid as persistDraftPsid } from '../lib/history'
 import type { ParameterDefinition, ValidationReport } from '../types/api'
 
@@ -145,6 +146,7 @@ function CategoryCard({
 
 export default function ParametersPage() {
   const { currentHabitationId } = useAppContext()
+  const { isReadOnly } = useCurrentUser()
   const queryClient = useQueryClient()
 
   const [draftPsid, setDraftPsidState] = useState<string | null>(() => getDraftPsid(currentHabitationId))
@@ -433,7 +435,8 @@ export default function ParametersPage() {
           <button
             type="button"
             onClick={() => saveAllMutation.mutate()}
-            disabled={saveAllMutation.isPending}
+            disabled={saveAllMutation.isPending || isReadOnly}
+            title={isReadOnly ? 'Researchers have read-only access and cannot edit official parameter sets' : undefined}
             className="flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
           >
             {saveAllMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
@@ -442,7 +445,8 @@ export default function ParametersPage() {
           <button
             type="button"
             onClick={() => validateMutation.mutate()}
-            disabled={validateMutation.isPending}
+            disabled={validateMutation.isPending || isReadOnly}
+            title={isReadOnly ? 'Researchers have read-only access and cannot edit official parameter sets' : undefined}
             className="flex items-center gap-2 rounded-lg border border-sky-300 bg-sky-50 px-4 py-2 text-sm font-medium text-sky-700 transition hover:bg-sky-100 disabled:opacity-60"
           >
             {validateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
@@ -451,9 +455,15 @@ export default function ParametersPage() {
           <button
             type="button"
             onClick={() => commitMutation.mutate()}
-            disabled={commitMutation.isPending || validationReport?.result !== 'PASS'}
+            disabled={commitMutation.isPending || validationReport?.result !== 'PASS' || isReadOnly}
             className="flex items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:cursor-not-allowed disabled:opacity-50"
-            title={validationReport?.result !== 'PASS' ? 'Run a passing validation first' : undefined}
+            title={
+              isReadOnly
+                ? 'Researchers have read-only access and cannot commit parameter sets'
+                : validationReport?.result !== 'PASS'
+                  ? 'Run a passing validation first'
+                  : undefined
+            }
           >
             {commitMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Lock className="h-4 w-4" />}
             Commit Parameter Set

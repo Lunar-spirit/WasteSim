@@ -1,39 +1,92 @@
 import { apiClient, unwrap } from './client'
 import type {
   ApiEnvelope,
+  AutoPopulateResult,
   BudgetLine,
   BudgetSummary,
+  BulkImportResult,
+  ChatHistoryTurn,
   ChatMessage,
+  ChatMessageReply,
   ChatSession,
   CommitResult,
+  ComparativePreviewIn,
+  ComparativePreviewResult,
   Comparison,
   ComparisonDeltas,
   ComparisonSeries,
+  CurrentUser,
+  DailyLog,
+  DailyLogExportParams,
+  DailyLogIn,
+  DailyLogPage,
   EventCatalogueItem,
   EventIn,
   GISLayer,
   Habitation,
   HabitationCreatePayload,
   ImpactPreview,
+  LayerType,
   MapOverlay,
   OptimizationCandidate,
   OptimizationCreateResult,
   OptimizationExplanation,
+  OptimizationReadiness,
   OptimizationRun,
   ParameterDefinition,
   ParameterSet,
   ParameterSetDetail,
+  RecalibrationReport,
   ReportDownload,
   ReportResponse,
   RunFinding,
   ScenarioEvent,
   SensitivityAnalysis,
   SimulationCreatePayload,
+  SimulationMonthlyResultsResponse,
   SimulationResultsResponse,
   SimulationRun,
   TornadoRow,
+  UserAccess,
+  UserRole,
   ValidationReport,
 } from '../types/api'
+
+// --- Current user ------------------------------------------------------------
+
+export async function fetchCurrentUser(): Promise<CurrentUser> {
+  const { data } = await apiClient.get<ApiEnvelope<CurrentUser>>('/api/v1/auth/me')
+  return unwrap(data)
+}
+
+// --- Admin access control ---------------------------------------------------
+
+export async function fetchUsersWithAccess(): Promise<UserAccess[]> {
+  const { data } = await apiClient.get<ApiEnvelope<UserAccess[]>>('/api/v1/admin/access/users')
+  return unwrap(data)
+}
+
+export async function assignPlanner(userId: string, habitationId: string): Promise<void> {
+  const { data } = await apiClient.post<ApiEnvelope<unknown>>('/api/v1/admin/access/assign', {
+    user_id: userId,
+    habitation_id: habitationId,
+  })
+  unwrap(data)
+}
+
+export async function unassignPlanner(userId: string, habitationId: string): Promise<void> {
+  const { data } = await apiClient.delete<ApiEnvelope<unknown>>('/api/v1/admin/access/unassign', {
+    data: { user_id: userId, habitation_id: habitationId },
+  })
+  unwrap(data)
+}
+
+export async function changeUserRole(userId: string, role: UserRole): Promise<CurrentUser> {
+  const { data } = await apiClient.patch<ApiEnvelope<CurrentUser>>(`/api/v1/admin/access/users/${userId}/role`, {
+    role,
+  })
+  return unwrap(data)
+}
 
 export async function fetchHabitations(): Promise<Habitation[]> {
   const { data } = await apiClient.get<ApiEnvelope<Habitation[]>>('/api/v1/habitations')
@@ -83,6 +136,14 @@ export async function fetchSimulationResults(runId: string): Promise<SimulationR
   return unwrap(data)
 }
 
+export async function fetchSimulationMonthlyResults(runId: string): Promise<SimulationMonthlyResultsResponse> {
+  const { data } = await apiClient.get<ApiEnvelope<SimulationMonthlyResultsResponse>>(
+    `/api/v1/simulations/${runId}/results`,
+    { params: { aggregate: 'monthly' } },
+  )
+  return unwrap(data)
+}
+
 export async function fetchSimulationFindings(runId: string): Promise<RunFinding[]> {
   const { data } = await apiClient.get<ApiEnvelope<RunFinding[]>>(`/api/v1/simulations/${runId}/findings`)
   return unwrap(data)
@@ -98,8 +159,8 @@ export async function fetchBudgetSummary(runId: string): Promise<BudgetSummary> 
   return unwrap(data)
 }
 
-export async function autoPopulateHabitation(habitationId: string): Promise<Record<string, unknown>> {
-  const { data } = await apiClient.post<ApiEnvelope<Record<string, unknown>>>(
+export async function autoPopulateHabitation(habitationId: string): Promise<AutoPopulateResult> {
+  const { data } = await apiClient.post<ApiEnvelope<AutoPopulateResult>>(
     `/api/v1/habitations/${habitationId}/auto-populate`,
     {},
   )
@@ -150,6 +211,17 @@ export async function patchLayer(
   payload: { is_visible_default?: boolean; style?: Record<string, unknown>; z_index?: number; layer_name?: string },
 ): Promise<GISLayer> {
   const { data } = await apiClient.patch<ApiEnvelope<GISLayer>>(`/api/v1/layers/${layerId}`, payload)
+  return unwrap(data)
+}
+
+export async function createLayer(
+  habitationId: string,
+  payload: { layer_name: string; layer_type: LayerType; geojson: Record<string, unknown> },
+): Promise<GISLayer> {
+  const { data } = await apiClient.post<ApiEnvelope<GISLayer>>(
+    `/api/v1/habitations/${habitationId}/layers`,
+    payload,
+  )
   return unwrap(data)
 }
 
@@ -245,6 +317,11 @@ export async function previewEventImpact(
   return unwrap(data)
 }
 
+export async function previewComparativeImpact(payload: ComparativePreviewIn): Promise<ComparativePreviewResult> {
+  const { data } = await apiClient.post<ApiEnvelope<ComparativePreviewResult>>('/api/v1/scenarios/preview', payload)
+  return unwrap(data)
+}
+
 // --- Sensitivity -------------------------------------------------------------
 
 export async function createSensitivitySweep(
@@ -272,6 +349,13 @@ export async function fetchSensitivityTornado(analysisId: string): Promise<Torna
 }
 
 // --- Optimization ------------------------------------------------------------
+
+export async function fetchOptimizationReadiness(habitationId: string): Promise<OptimizationReadiness> {
+  const { data } = await apiClient.get<ApiEnvelope<OptimizationReadiness>>(
+    `/api/v1/habitations/${habitationId}/optimization/readiness`,
+  )
+  return unwrap(data)
+}
 
 export async function createOptimization(
   habitationId: string,
@@ -364,5 +448,82 @@ export async function sendChatQuery(
     message,
     run_id: runId,
   })
+  return unwrap(data)
+}
+
+/** The floating copilot's stateless endpoint — no session, no server-side
+ * persistence; the caller resends its own running `history` every call. */
+export async function sendFloatingChatMessage(
+  habitationId: string | null,
+  message: string,
+  history: ChatHistoryTurn[],
+): Promise<ChatMessageReply> {
+  const { data } = await apiClient.post<ApiEnvelope<ChatMessageReply>>('/api/v1/chat/message', {
+    habitation_id: habitationId,
+    message,
+    history,
+  })
+  return unwrap(data)
+}
+
+// --- Daily Waste Logs --------------------------------------------------------
+
+export async function fetchDailyLogs(
+  habitationId: string,
+  params: { from_date?: string; to_date?: string; page?: number; page_size?: number } = {},
+): Promise<DailyLogPage> {
+  const { data } = await apiClient.get<ApiEnvelope<DailyLogPage>>(
+    `/api/v1/habitations/${habitationId}/daily-logs`,
+    { params },
+  )
+  return unwrap(data)
+}
+
+export async function upsertDailyLog(
+  habitationId: string,
+  payload: DailyLogIn,
+): Promise<DailyLog & { created: boolean }> {
+  const { data } = await apiClient.post<ApiEnvelope<DailyLog & { created: boolean }>>(
+    `/api/v1/habitations/${habitationId}/daily-logs`,
+    payload,
+  )
+  return unwrap(data)
+}
+
+export async function bulkImportDailyLogsCsv(habitationId: string, file: File): Promise<BulkImportResult> {
+  const form = new FormData()
+  form.append('file', file)
+  const { data } = await apiClient.post<ApiEnvelope<BulkImportResult>>(
+    `/api/v1/habitations/${habitationId}/daily-logs/bulk-csv`,
+    form,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  )
+  return unwrap(data)
+}
+
+/** The export endpoint returns a raw file (CSV/XLSX), not the usual
+ * {success, data} envelope, so this bypasses `unwrap` and reads the
+ * filename straight off the Content-Disposition header the backend sets. */
+export async function exportDailyLogs(
+  habitationId: string,
+  params: DailyLogExportParams,
+): Promise<{ blob: Blob; filename: string }> {
+  const response = await apiClient.get(`/api/v1/habitations/${habitationId}/daily-logs/export`, {
+    params,
+    responseType: 'blob',
+  })
+  const disposition = (response.headers['content-disposition'] as string | undefined) ?? ''
+  const match = /filename="?([^"]+)"?/.exec(disposition)
+  const fallbackExt = params.format === 'xlsx' ? 'xlsx' : 'csv'
+  const filename = match?.[1] ?? `daily_logs.${fallbackExt}`
+  return { blob: response.data as Blob, filename }
+}
+
+// --- Recalibration -----------------------------------------------------------
+
+export async function fetchRecalibrationReport(habitationId: string): Promise<RecalibrationReport> {
+  const { data } = await apiClient.get<ApiEnvelope<RecalibrationReport>>(
+    `/api/v1/habitations/${habitationId}/recalibration-report`,
+  )
   return unwrap(data)
 }

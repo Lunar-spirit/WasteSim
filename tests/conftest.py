@@ -19,6 +19,7 @@ from app.comparison import models as _comparison_models  # noqa: E402,F401
 from app.core.config import settings  # noqa: E402
 from app.core.db import Base, get_db  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
+from app.daily_logs import models as _daily_logs_models  # noqa: E402,F401
 from app.gis import models as _gis_models  # noqa: E402,F401
 from app.habitation import models as _habitation_models  # noqa: E402,F401
 from app.ingestion import models as _ingestion_models  # noqa: E402,F401

@@ -1,31 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { Loader2, MapPinOff, Mountain, Route, Sparkles } from 'lucide-react'
-// maplibre-gl v6 ships ESM with only named exports — there is no default
-// export (`import maplibregl from 'maplibre-gl'` fails at runtime with
-// "does not provide an export named 'default'", found live while first
-// building this workspace).
-import { Map as MaplibreMap, NavigationControl, type StyleSpecification } from 'maplibre-gl'
+import { AlertTriangle, Check, Factory, Loader2, MapPin, MapPinOff, Mountain, Route, Sparkles, Trash2, X } from 'lucide-react'
+import L from 'leaflet'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { autoPopulateHabitation, fetchHabitation, fetchLayers, fetchMapOverlay, fetchParameterSet } from '../api/endpoints'
+import { autoPopulateHabitation, createLayer, fetchHabitation, fetchLayers, fetchMapOverlay, fetchParameterSet } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
+import { useCurrentUser } from '../hooks/useCurrentUser'
+import { attachBasemapWithFallback } from '../lib/basemap'
 import { setDraftPsid } from '../lib/history'
-import type { LayerType, MapOverlay } from '../types/api'
-
-const BASE_STYLE: StyleSpecification = {
-  version: 8,
-  sources: {
-    'osm-raster': {
-      type: 'raster',
-      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-      tileSize: 256,
-      attribution: '© OpenStreetMap contributors',
-    },
-  },
-  layers: [{ id: 'osm-raster-layer', type: 'raster', source: 'osm-raster' }],
-}
-
-const BOUNDARY_SOURCE_ID = 'habitation-boundary'
-const LAYER_SOURCE_PREFIX = 'gis-layer-'
+import type { LayerType, MapOverlay, RoadDiagnostics } from '../types/api'
 
 const LAYER_COLOURS: Record<string, string> = {
   ROAD: '#334155',
@@ -53,79 +35,98 @@ const LAYER_TOGGLES: { type: LayerType; label: string }[] = [
   { type: 'INDUSTRIAL_ZONE', label: 'Industrial Zones' },
 ]
 
-function addFeatureCollectionLayers(
-  map: MaplibreMap,
-  sourceId: string,
-  featureCollection: GeoJSON.FeatureCollection,
-  colour: string,
-) {
-  map.addSource(sourceId, { type: 'geojson', data: featureCollection })
-  map.addLayer({
-    id: `${sourceId}-fill`,
-    type: 'fill',
-    source: sourceId,
-    filter: ['==', ['geometry-type'], 'Polygon'],
-    paint: { 'fill-color': colour, 'fill-opacity': 0.15 },
-  })
-  map.addLayer({
-    id: `${sourceId}-line`,
-    type: 'line',
-    source: sourceId,
-    filter: ['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'LineString']],
-    paint: { 'line-color': colour, 'line-width': 2 },
-  })
-  map.addLayer({
-    id: `${sourceId}-point`,
-    type: 'circle',
-    source: sourceId,
-    filter: ['==', ['geometry-type'], 'Point'],
-    paint: { 'circle-radius': 6, 'circle-color': colour, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#ffffff' },
+// The three kinds of point a planner can drop a pin for, with the exact
+// same plain-language names used everywhere else on this page (the layer
+// toggles above) so the same thing is never called two different names.
+const PLACEABLE_POINT_TYPES: { type: LayerType; label: string; icon: typeof MapPin }[] = [
+  { type: 'COLLECTION_ZONE', label: 'Collection Point', icon: MapPin },
+  { type: 'FACILITY_TREATMENT', label: 'Treatment Facility', icon: Factory },
+  { type: 'FACILITY_LANDFILL', label: 'Dumpsite', icon: Trash2 },
+]
+
+// A plain inline-SVG pin, not Leaflet's default marker image (whose asset
+// path breaks under most bundlers unless specially configured) — no
+// external file dependency either way.
+function pinIcon(colour: string): L.DivIcon {
+  return L.divIcon({
+    className: '',
+    html: `<svg width="28" height="36" viewBox="0 0 28 36" xmlns="http://www.w3.org/2000/svg">
+      <path d="M14 0C6.3 0 0 6.3 0 14c0 10.5 14 22 14 22s14-11.5 14-22c0-7.7-6.3-14-14-14z" fill="${colour}" stroke="white" stroke-width="2"/>
+      <circle cx="14" cy="14" r="5" fill="white"/>
+    </svg>`,
+    iconSize: [28, 36],
+    iconAnchor: [14, 36],
   })
 }
 
-function renderOverlay(map: MaplibreMap, overlay: MapOverlay, visibleTypes: Set<LayerType>) {
-  const staleLayers =
-    map.getStyle().layers?.filter((l) => l.id.startsWith(LAYER_SOURCE_PREFIX) || l.id.startsWith(BOUNDARY_SOURCE_ID)) ?? []
-  for (const layer of staleLayers) {
-    if (map.getLayer(layer.id)) map.removeLayer(layer.id)
-  }
-  for (const sourceId of Object.keys(map.getStyle().sources ?? {})) {
-    if (sourceId.startsWith(LAYER_SOURCE_PREFIX) || sourceId === BOUNDARY_SOURCE_ID) {
-      if (map.getSource(sourceId)) map.removeSource(sourceId)
-    }
-  }
+function renderOverlay(map: L.Map, overlayLayerGroup: L.LayerGroup, overlay: MapOverlay | undefined, visibleTypes: Set<LayerType>) {
+  overlayLayerGroup.clearLayers()
+  if (!overlay) return
 
   if (overlay.boundary && visibleTypes.has('ADMIN_BOUNDARY')) {
-    addFeatureCollectionLayers(
-      map,
-      BOUNDARY_SOURCE_ID,
-      { type: 'FeatureCollection', features: [{ type: 'Feature', properties: {}, geometry: overlay.boundary }] },
-      '#16a34a',
-    )
+    L.geoJSON(overlay.boundary, {
+      style: { color: '#16a34a', weight: 2, fillOpacity: 0.08 },
+    }).addTo(overlayLayerGroup)
   }
 
   for (const layer of overlay.layers) {
     if (layer.mode !== 'geojson' || !layer.features) continue
     if (!visibleTypes.has(layer.layer_type)) continue
     const colour = LAYER_COLOURS[layer.layer_type] ?? '#0ea5e9'
-    addFeatureCollectionLayers(map, `${LAYER_SOURCE_PREFIX}${layer.layer_id}`, layer.features, colour)
+    L.geoJSON(layer.features, {
+      style: { color: colour, weight: 2, fillOpacity: 0.15 },
+      pointToLayer: (_feature, latlng) => L.circleMarker(latlng, { radius: 6, color: '#ffffff', weight: 1.5, fillColor: colour, fillOpacity: 1 }),
+    }).addTo(overlayLayerGroup)
   }
 
   if (overlay.bbox) {
     const [minLon, minLat, maxLon, maxLat] = overlay.bbox
-    map.fitBounds([[minLon, minLat], [maxLon, maxLat]], { padding: 48, duration: 400 })
+    map.fitBounds(
+      [
+        [minLat, minLon],
+        [maxLat, maxLon],
+      ],
+      { padding: [48, 48] },
+    )
   }
+}
+
+interface PendingPoint {
+  lng: number
+  lat: number
 }
 
 export default function GisStudioPage() {
   const { currentHabitationId } = useAppContext()
+  const { isReadOnly } = useCurrentUser()
   const queryClient = useQueryClient()
   const mapContainerRef = useRef<HTMLDivElement | null>(null)
-  const mapRef = useRef<MaplibreMap | null>(null)
-  const isStyleLoadedRef = useRef(false)
+  const mapRef = useRef<L.Map | null>(null)
+  const overlayLayerGroupRef = useRef<L.LayerGroup | null>(null)
+  const markerRef = useRef<L.Marker | null>(null)
 
   const [visibleTypes, setVisibleTypes] = useState<Set<LayerType>>(() => new Set(LAYER_TOGGLES.map((t) => t.type)))
   const [autoPopulateStatus, setAutoPopulateStatus] = useState<string | null>(null)
+  const [autoPopulateStage, setAutoPopulateStage] = useState<string | null>(null)
+  const [roadDiagnosticsAlert, setRoadDiagnosticsAlert] = useState<RoadDiagnostics | null>(null)
+
+  // --- Click-to-place point picker ------------------------------------------
+  const [isPicking, setIsPicking] = useState(false)
+  const [pendingPoint, setPendingPoint] = useState<PendingPoint | null>(null)
+  const [pendingType, setPendingType] = useState<LayerType>('COLLECTION_ZONE')
+  const [chipPixel, setChipPixel] = useState<{ x: number; y: number } | null>(null)
+  const [placeError, setPlaceError] = useState<string | null>(null)
+
+  // Refs so the map's permanently-registered event handlers (below) always
+  // see the latest values without needing to re-subscribe on every render.
+  const isPickingRef = useRef(isPicking)
+  const pendingPointRef = useRef(pendingPoint)
+  useEffect(() => {
+    isPickingRef.current = isPicking
+  }, [isPicking])
+  useEffect(() => {
+    pendingPointRef.current = pendingPoint
+  }, [pendingPoint])
 
   const overlayQuery = useQuery({
     queryKey: ['map-overlay', currentHabitationId],
@@ -149,62 +150,155 @@ export default function GisStudioPage() {
   })
 
   const autoPopulateMutation = useMutation({
-    mutationFn: () => autoPopulateHabitation(currentHabitationId),
+    mutationFn: () => {
+      // The request is a single synchronous round trip (app/automation/
+      // router.py — everything runs concurrently server-side, not a 202
+      // background job), so there's no real per-stage progress to poll for;
+      // this is a one-shot "what's happening" message for the wait, not a
+      // literal multi-step tracker.
+      setAutoPopulateStage('Querying OpenStreetMap for roads, and rainfall/terrain services...')
+      return autoPopulateHabitation(currentHabitationId)
+    },
     onSuccess: (result) => {
-      const automated = (result.automated_categories as string[] | undefined) ?? []
-      const skipped = (result.skipped_categories as { category: string }[] | undefined) ?? []
+      const automated = result.automated_categories
+      const skipped = result.skipped_categories
+      const diag = result.road_diagnostics
+
+      if (diag.status === 'SUCCESS' && diag.total_length_km !== null) {
+        setAutoPopulateStage(
+          `Ingested ${diag.parsed_linestring_count ?? 0} road feature(s) (${diag.total_length_km.toFixed(2)} km).`,
+        )
+      } else {
+        setAutoPopulateStage(null)
+      }
       setAutoPopulateStatus(
         `Auto-populated ${automated.length} field(s)` +
-          (skipped.length ? `, skipped ${skipped.length} (external service unavailable)` : ''),
+          (skipped.length ? `, skipped ${skipped.length} (see below)` : ''),
       )
-      // Auto-populate writes into a real draft parameter set behind the
-      // scenes (creating one if the habitation had none) — record it so
-      // the Parameters page reuses this draft instead of starting a blank
-      // second one that would orphan everything just fetched.
-      const psid = result.parameter_set_id as string | undefined
+      if (diag.status !== 'SUCCESS') {
+        setRoadDiagnosticsAlert(diag)
+      }
+
+      const psid = result.parameter_set_id
       if (psid) {
         setDraftPsid(currentHabitationId, psid)
-        // The Parameters page may already have this exact parameter set
-        // cached from an earlier visit (before auto-populate wrote into
-        // it) — without this, it would keep showing pre-populate values
-        // until something else happens to refetch it.
         queryClient.invalidateQueries({ queryKey: ['parameter-set', psid] })
       }
       queryClient.invalidateQueries({ queryKey: ['map-overlay', currentHabitationId] })
       queryClient.invalidateQueries({ queryKey: ['gis-layers', currentHabitationId] })
       queryClient.invalidateQueries({ queryKey: ['habitation', currentHabitationId] })
     },
-    onError: (error: Error) => setAutoPopulateStatus(`Auto-populate failed: ${error.message}`),
+    onError: (error: Error) => {
+      setAutoPopulateStage(null)
+      setAutoPopulateStatus(`Auto-populate failed: ${error.message}`)
+    },
   })
 
+  function clearPin() {
+    markerRef.current?.remove()
+    markerRef.current = null
+    setPendingPoint(null)
+    setChipPixel(null)
+    setPlaceError(null)
+  }
+
+  function stopPicking() {
+    setIsPicking(false)
+    clearPin()
+  }
+
+  const placePointMutation = useMutation({
+    mutationFn: (point: PendingPoint & { layerType: LayerType }) => {
+      const label = PLACEABLE_POINT_TYPES.find((t) => t.type === point.layerType)?.label ?? point.layerType
+      return createLayer(currentHabitationId, {
+        layer_name: `${label} — ${new Date().toLocaleString()}`,
+        layer_type: point.layerType,
+        geojson: {
+          type: 'FeatureCollection',
+          features: [{ type: 'Feature', properties: {}, geometry: { type: 'Point', coordinates: [point.lng, point.lat] } }],
+        },
+      })
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['gis-layers', currentHabitationId] })
+      queryClient.invalidateQueries({ queryKey: ['map-overlay', currentHabitationId] })
+      stopPicking()
+    },
+    onError: (error: Error) => setPlaceError(error.message),
+  })
+
+  // --- Map lifecycle: created once, a plain Leaflet map (regular <img>
+  // tiles + SVG overlays) rather than a WebGL canvas — found live that this
+  // environment's browser can execute WebGL draw calls correctly but never
+  // actually presents the composited frame on screen, so a WebGL map (the
+  // previous MapLibre GL JS build of this page) rendered real pixel data
+  // into its own buffer yet stayed visibly blank no matter what tile
+  // provider it used. Regular DOM/SVG content doesn't have that problem.
   useEffect(() => {
     if (!mapContainerRef.current || mapRef.current) return
-    const map = new MaplibreMap({
-      container: mapContainerRef.current,
-      style: BASE_STYLE,
-      center: [74.8, 13.35],
-      zoom: 12,
-      attributionControl: { compact: true },
+    const map = L.map(mapContainerRef.current, { center: [13.35, 74.8], zoom: 12, zoomControl: true })
+    attachBasemapWithFallback(map)
+    const overlayLayerGroup = L.layerGroup().addTo(map)
+    overlayLayerGroupRef.current = overlayLayerGroup
+
+    function updateChipPixel(latlng: L.LatLng) {
+      const point = map.latLngToContainerPoint(latlng)
+      setChipPixel({ x: point.x, y: point.y })
+    }
+
+    map.on('move', () => {
+      if (pendingPointRef.current) {
+        updateChipPixel(L.latLng(pendingPointRef.current.lat, pendingPointRef.current.lng))
+      }
     })
-    map.addControl(new NavigationControl({ showCompass: false }), 'top-right')
-    map.on('load', () => {
-      isStyleLoadedRef.current = true
-      if (overlayQuery.data) renderOverlay(map, overlayQuery.data, visibleTypes)
+
+    map.on('click', (e: L.LeafletMouseEvent) => {
+      if (!isPickingRef.current) return
+      const point = { lng: e.latlng.lng, lat: e.latlng.lat }
+      if (markerRef.current) {
+        markerRef.current.setLatLng(e.latlng)
+      } else {
+        const marker = L.marker(e.latlng, { draggable: true, icon: pinIcon('#059669') }).addTo(map)
+        marker.on('drag', () => updateChipPixel(marker.getLatLng()))
+        marker.on('dragend', () => {
+          const latlng = marker.getLatLng()
+          const dragged = { lng: latlng.lng, lat: latlng.lat }
+          pendingPointRef.current = dragged
+          setPendingPoint(dragged)
+          updateChipPixel(latlng)
+        })
+        markerRef.current = marker
+      }
+      pendingPointRef.current = point
+      setPendingPoint(point)
+      setPlaceError(null)
+      updateChipPixel(e.latlng)
     })
+
     mapRef.current = map
     return () => {
       map.remove()
       mapRef.current = null
-      isStyleLoadedRef.current = false
+      overlayLayerGroupRef.current = null
+      markerRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
   useEffect(() => {
     const map = mapRef.current
-    if (!map || !overlayQuery.data || !isStyleLoadedRef.current) return
-    renderOverlay(map, overlayQuery.data, visibleTypes)
+    const overlayLayerGroup = overlayLayerGroupRef.current
+    if (!map || !overlayLayerGroup || !overlayQuery.data) return
+    renderOverlay(map, overlayLayerGroup, overlayQuery.data, visibleTypes)
   }, [overlayQuery.data, visibleTypes])
+
+  // Crosshair cursor only while actively placing a point.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map) return
+    const container = map.getContainer()
+    container.style.cursor = isPicking ? 'crosshair' : ''
+  }, [isPicking])
 
   function toggleLayer(type: LayerType) {
     setVisibleTypes((prev) => {
@@ -240,10 +334,24 @@ export default function GisStudioPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Studio &amp; GIS Digital Twin</h2>
         <div className="flex items-center gap-3">
+          {!isReadOnly && (
+            <button
+              type="button"
+              onClick={() => (isPicking ? stopPicking() : setIsPicking(true))}
+              title={isPicking ? 'Stop placing a point' : 'Click the map to drop a point (collection point, treatment facility, or dumpsite)'}
+              aria-pressed={isPicking}
+              className={`flex items-center gap-2 rounded-lg border px-3.5 py-2 text-sm font-medium transition ${
+                isPicking ? 'border-emerald-400 bg-emerald-600 text-white' : 'border-slate-300 bg-white text-slate-600 hover:bg-slate-50'
+              }`}
+            >
+              <MapPin className="h-4 w-4" />
+            </button>
+          )}
           <button
             type="button"
             onClick={() => autoPopulateMutation.mutate()}
-            disabled={autoPopulateMutation.isPending}
+            disabled={autoPopulateMutation.isPending || isReadOnly}
+            title={isReadOnly ? 'Researchers have read-only access and cannot edit official GIS layers' : undefined}
             className="flex items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3.5 py-2 text-sm font-medium text-emerald-700 transition hover:bg-emerald-100 disabled:opacity-60"
           >
             {autoPopulateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
@@ -252,7 +360,24 @@ export default function GisStudioPage() {
           {overlayQuery.isFetching && <Loader2 className="h-3.5 w-3.5 animate-spin text-slate-400" />}
         </div>
       </div>
+      {autoPopulateMutation.isPending && autoPopulateStage && (
+        <p className="flex items-center gap-1.5 rounded-md border border-sky-200 bg-sky-50 px-2.5 py-1.5 text-xs text-sky-700">
+          <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          {autoPopulateStage}
+        </p>
+      )}
+      {!autoPopulateMutation.isPending && autoPopulateStage && (
+        <p className="flex items-center gap-1.5 rounded-md border border-emerald-200 bg-emerald-50 px-2.5 py-1.5 text-xs text-emerald-700">
+          <Check className="h-3.5 w-3.5" />
+          {autoPopulateStage}
+        </p>
+      )}
       {autoPopulateStatus && <p className="text-xs text-slate-500">{autoPopulateStatus}</p>}
+      {isPicking && !pendingPoint && (
+        <p className="flex items-center gap-1.5 text-xs text-emerald-700">
+          <MapPin className="h-3.5 w-3.5" /> Click anywhere on the map to drop a point. Drag it afterwards to fine-tune the spot.
+        </p>
+      )}
 
       <div className="flex flex-wrap gap-2">
         {LAYER_TOGGLES.map(({ type, label }) => {
@@ -276,19 +401,64 @@ export default function GisStudioPage() {
       <div className="relative min-h-[480px] flex-1 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
         <div ref={mapContainerRef} className="absolute inset-0" />
         {overlayQuery.isLoading && (
-          <div className="absolute inset-0 flex items-center justify-center bg-white/70">
+          <div className="absolute inset-0 z-[500] flex items-center justify-center bg-white/70">
             <Loader2 className="h-6 w-6 animate-spin text-slate-400" />
           </div>
         )}
         {overlayQuery.isError && (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 bg-white/90 text-slate-500">
+          <div className="absolute inset-0 z-[500] flex flex-col items-center justify-center gap-2 bg-white/90 text-slate-500">
             <MapPinOff className="h-8 w-8" />
             <p className="text-sm">Could not load GIS layers for this habitation.</p>
           </div>
         )}
 
+        {/* Floating confirm/cancel chip, glued to the pin being placed */}
+        {pendingPoint && chipPixel && (
+          <div
+            className="absolute z-[600] flex -translate-x-1/2 -translate-y-full flex-col items-center gap-1.5 rounded-xl border border-slate-200 bg-white p-1.5 shadow-lg"
+            style={{ left: chipPixel.x, top: chipPixel.y - 14 }}
+          >
+            <div className="flex items-center gap-1">
+              {PLACEABLE_POINT_TYPES.map(({ type, label, icon: Icon }) => (
+                <button
+                  key={type}
+                  type="button"
+                  title={label}
+                  onClick={() => setPendingType(type)}
+                  className={`flex h-7 w-7 items-center justify-center rounded-lg border transition ${
+                    pendingType === type ? 'border-emerald-400 bg-emerald-50 text-emerald-700' : 'border-slate-200 text-slate-500 hover:bg-slate-50'
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                </button>
+              ))}
+              <span className="mx-0.5 h-5 w-px bg-slate-200" />
+              <button
+                key="confirm"
+                type="button"
+                title={`Save as: ${PLACEABLE_POINT_TYPES.find((t) => t.type === pendingType)?.label}`}
+                onClick={() => placePointMutation.mutate({ ...pendingPoint, layerType: pendingType })}
+                disabled={placePointMutation.isPending}
+                className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-600 text-white transition hover:bg-emerald-700 disabled:opacity-60"
+              >
+                {placePointMutation.isPending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+              </button>
+              <button
+                key="cancel"
+                type="button"
+                title="Discard this point"
+                onClick={stopPicking}
+                className="flex h-7 w-7 items-center justify-center rounded-lg border border-slate-200 text-slate-500 transition hover:bg-slate-50"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            {placeError && <p className="max-w-[220px] text-center text-[10px] text-red-600">{placeError}</p>}
+          </div>
+        )}
+
         {/* Floating GIS Inspector Card */}
-        <div className="absolute bottom-4 left-4 w-64 rounded-xl border border-slate-200 bg-white/95 p-4 text-xs shadow-lg backdrop-blur">
+        <div className="absolute bottom-4 left-4 z-[500] w-64 rounded-xl border border-slate-200 bg-white/95 p-4 text-xs shadow-lg backdrop-blur">
           <h3 className="mb-2 flex items-center gap-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-500">
             <Route className="h-3.5 w-3.5" /> GIS Inspector
           </h3>
@@ -319,8 +489,54 @@ export default function GisStudioPage() {
               </span>
             </div>
           )}
+          {!layersQuery.isLoading && inspector.layerCount === 0 && (
+            <p className="mt-2.5 rounded-lg bg-amber-50 px-2 py-1.5 text-amber-700">
+              No GIS layers yet for this habitation. Try <span className="font-medium">Auto-Populate</span> above, or use the{' '}
+              <span className="font-medium">pin tool</span> to add one by hand.
+            </p>
+          )}
         </div>
       </div>
+
+      {roadDiagnosticsAlert && (
+        <div className="fixed inset-0 z-[1000] flex items-start justify-center bg-slate-900/20 pt-24">
+          <div className="w-full max-w-xs rounded-lg border border-slate-200 bg-white p-3.5 shadow-lg">
+            <div className="flex items-start gap-2">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
+              <div className="min-w-0 flex-1">
+                <h3 className="text-xs font-semibold text-slate-900">
+                  Road length is {roadDiagnosticsAlert.total_length_km?.toFixed(2) ?? '0.00'} km
+                </h3>
+                <p className="mt-0.5 text-xs text-slate-600">{roadDiagnosticsAlert.reason}</p>
+                <p className="mt-1.5 text-[11px] text-slate-400">
+                  Overpass: {roadDiagnosticsAlert.overpass_raw_node_count ?? 0} nodes,{' '}
+                  {roadDiagnosticsAlert.overpass_raw_way_count ?? 0} ways ·{' '}
+                  {roadDiagnosticsAlert.parsed_linestring_count ?? 0} parsed
+                </p>
+
+                {roadDiagnosticsAlert.query_boundary_ring && (
+                  <details className="mt-1.5">
+                    <summary className="cursor-pointer text-[11px] font-medium text-slate-500 hover:text-slate-700">
+                      Boundary queried
+                    </summary>
+                    <pre className="mt-1 max-h-20 overflow-auto rounded bg-slate-900 p-1.5 text-[10px] text-slate-100">
+                      {JSON.stringify(roadDiagnosticsAlert.query_boundary_ring)}
+                    </pre>
+                  </details>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setRoadDiagnosticsAlert(null)}
+                title="Close"
+                className="shrink-0 rounded p-0.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

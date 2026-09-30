@@ -6,9 +6,13 @@ use a short 2-year horizon so a 20-30 candidate search stays fast.
 
 import json
 
+import app.optimization.service as optimization_service
 from tests.conftest import TestSessionLocal
 from tests.test_gis_ingestion import _upload_gis_file, _run_worker as _run_gis_worker
 from tests.test_simulation import _make_ready_habitation, _run_worker as _run_sim_worker
+from app.habitation.models import Habitation
+from app.parameters.models import ParameterSet, ParameterSetStatus
+from app.optimization.service import format_worker_failure, get_optimization_readiness
 from app.workers.tasks_simulate import run_simulation
 from app.workers.tasks_optimize import run_optimization
 
@@ -134,6 +138,12 @@ async def test_infeasible_constraints_yield_no_best_plan(client, planner_headers
     assert data["best_candidate_id"] is None
     assert data["infeasible_reason"] is not None
     assert "BR-25" in data["infeasible_reason"]
+    # Two-line contract: a planner-facing headline on the first line (used as
+    # the collapsed banner text), the exact BR-25 wording (asserted above)
+    # on the second (used inside the [View Details] accordion).
+    headline, _, detail = data["infeasible_reason"].partition("\n")
+    assert headline.startswith("Infeasible optimization constraints:")
+    assert "BR-25" in detail
 
 
 async def test_normal_search_finds_a_plan_at_least_as_good_as_do_nothing(client, planner_headers):
@@ -190,3 +200,105 @@ async def test_normal_search_finds_a_plan_at_least_as_good_as_do_nothing(client,
     await _run_sim_worker(optimized_run_id)
     run_status = await client.get(f"/api/v1/simulations/{optimized_run_id}", headers=planner_headers)
     assert run_status.json()["data"]["status"] == "COMPLETED"
+
+
+async def _async(value):
+    return value
+
+
+async def test_readiness_blocks_without_base_simulation(client, planner_headers):
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "Nobaserunville")
+
+    resp = await client.get(
+        f"/api/v1/habitations/{habitation_id}/optimization/readiness", headers=planner_headers
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+    assert data["can_run"] is False
+    assert data["checks"]["base_simulation_exists"] is False
+    assert data["action_label"] == "Go to Simulations"
+    assert data["action_tab"] == "simulations"
+    assert "baseline simulation" in data["blocking_reason"]
+
+
+async def test_readiness_blocks_when_worker_offline(client, planner_headers, monkeypatch):
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "Workeroffline")
+    await _make_completed_base_run(client, planner_headers, habitation_id)
+
+    monkeypatch.setattr(optimization_service, "_worker_available", lambda: _async(False))
+
+    resp = await client.get(
+        f"/api/v1/habitations/{habitation_id}/optimization/readiness", headers=planner_headers
+    )
+    data = resp.json()["data"]
+    assert data["can_run"] is False
+    assert data["checks"]["base_simulation_exists"] is True
+    assert data["checks"]["parameters_validated"] is True
+    assert data["checks"]["worker_available"] is False
+    assert "offline" in data["blocking_reason"]
+
+
+async def test_readiness_can_run_true_ignores_missing_gis_roads(client, planner_headers, monkeypatch):
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "Readyville")
+    await _make_completed_base_run(client, planner_headers, habitation_id)
+
+    monkeypatch.setattr(optimization_service, "_worker_available", lambda: _async(True))
+
+    resp = await client.get(
+        f"/api/v1/habitations/{habitation_id}/optimization/readiness", headers=planner_headers
+    )
+    data = resp.json()["data"]
+    # No ROAD layer was ever uploaded for this habitation, but that's only
+    # advisory (design decision documented in service.py) — it must not
+    # block the run.
+    assert data["checks"]["gis_roads_ready"] is False
+    assert data["can_run"] is True
+    assert data["blocking_reason"] is None
+
+
+async def test_readiness_blocks_when_parameters_not_validated(client, planner_headers):
+    """DRAFT-with-a-completed-base-run is not reachable through the real
+    API (committing is what sets active_parameter_set_id in the first
+    place, and nothing un-validates it afterward without also pointing at a
+    freshly VALIDATED set) — so this exercises the branch directly against
+    a hand-built DB state, the same way a unit test would."""
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "Draftregressville")
+    await _make_completed_base_run(client, planner_headers, habitation_id)
+
+    async with TestSessionLocal() as db:
+        habitation = await db.get(Habitation, habitation_id)
+        active = await db.get(ParameterSet, habitation.active_parameter_set_id)
+        draft = ParameterSet(
+            habitation_id=habitation_id,
+            version_no=99,
+            status=ParameterSetStatus.DRAFT,
+            created_by=active.created_by,
+        )
+        db.add(draft)
+        await db.flush()
+        habitation.active_parameter_set_id = draft.id
+        await db.commit()
+
+        readiness = await get_optimization_readiness(db, habitation_id)
+
+    assert readiness["can_run"] is False
+    assert readiness["checks"]["base_simulation_exists"] is True
+    assert readiness["checks"]["parameters_validated"] is False
+    assert readiness["action_label"] == "Review Parameters"
+    assert readiness["action_tab"] == "parameters"
+    assert "VALIDATED" in readiness["blocking_reason"]
+
+
+def test_format_worker_failure_maps_known_exception_types():
+    reason = format_worker_failure(RuntimeError("column simulation_yearly.foo does not exist"))
+    headline, _, detail = reason.partition("\n")
+    assert headline == "Optimization run failed unexpectedly"
+    assert "RuntimeError" in detail
+
+    class ProgrammingError(Exception):
+        pass
+
+    reason = format_worker_failure(ProgrammingError("column x does not exist"))
+    headline, _, detail = reason.partition("\n")
+    assert headline == "Database schema out of date"
+    assert "ProgrammingError" in detail

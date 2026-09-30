@@ -32,6 +32,31 @@ export interface TokenResponse {
   expires_in: number
 }
 
+// The backend's user_role enum spells the fourth role POLICY_VIEWER, not
+// VIEWER — kept as-is rather than renamed via a migration against a live
+// enum type; "Viewer" is just its label everywhere in this UI.
+export type UserRole = 'ADMIN' | 'PLANNER' | 'RESEARCHER' | 'POLICY_VIEWER'
+
+export interface CurrentUser {
+  id: string
+  email: string
+  full_name: string
+  role: UserRole
+  is_active: boolean
+  created_at: string
+}
+
+// --- Admin access control ---------------------------------------------------
+
+export interface UserAccess {
+  id: string
+  email: string
+  full_name: string
+  role: UserRole
+  is_active: boolean
+  habitation_ids: string[]
+}
+
 // --- Habitations -------------------------------------------------------------
 
 export type HabitationStatus = 'DRAFT' | 'READY' | 'ARCHIVED'
@@ -96,6 +121,7 @@ export interface SimulationCreatePayload {
   horizon_years?: number
   label?: string
   param_overrides?: Record<string, number | string>
+  engine_mode?: EngineMode
 }
 
 // One row of simulation_yearly — exact lowercase column names, per the
@@ -109,7 +135,13 @@ export interface SimulationYearly {
   treated_tpy: number
   recovered_tpy: number
   landfilled_tpy: number
+  // Null only for a run completed before this breakdown existed — see
+  // migration 0016; every run since always sets a real value.
+  organic_tpy: number | null
+  dry_recyclable_tpy: number | null
+  inert_tpy: number | null
   landfill_remaining_tonnes: number
+  cumulative_landfill_tonnes: number | null
   avg_coverage_pct: number
   peak_vehicle_shortfall: number
   opex_inr: number
@@ -120,9 +152,27 @@ export interface SimulationYearly {
   recovery_rate_pct: number
 }
 
+// One row per run per month — only the fields the charts actually use
+// (app/simulation/models.py's SimulationResult has more; _row_to_dict
+// returns all of them, this just types what this app reads).
+export interface SimulationMonthly {
+  month_index: number
+  year_index: number
+  calendar_month: number
+  waste_total_tpd: number
+  organic_pct: number
+  plastic_pct: number
+  paper_pct: number
+}
+
 export interface SimulationResultsResponse {
   aggregate: 'yearly' | 'monthly'
   series: SimulationYearly[]
+}
+
+export interface SimulationMonthlyResultsResponse {
+  aggregate: 'yearly' | 'monthly'
+  series: SimulationMonthly[]
 }
 
 // --- Reports -----------------------------------------------------------------
@@ -218,6 +268,21 @@ export interface ChatMessage {
   citations: ChatCitation[]
   latency_ms: number | null
   created_at: string
+}
+
+// The stateless POST /api/v1/chat/message contract (the floating copilot) —
+// no session to create first; the caller resends its own running history.
+export interface ChatHistoryTurn {
+  role: 'user' | 'assistant'
+  content: string
+}
+
+export type ChatReplySource = 'faq' | 'tool' | 'llm' | 'fallback'
+
+export interface ChatMessageReply {
+  content: string
+  citations: ChatCitation[]
+  source: ChatReplySource
 }
 
 // --- Parameters ----------------------------------------------------------
@@ -359,12 +424,17 @@ export interface EventCatalogueItem {
   magnitude_source: string
 }
 
+// Matches app/scenario/models.py's EventSeverity exactly — a prior 'MILD'
+// here (instead of 'LOW') meant every low-intensity "Run Full Scenario"
+// click sent a value the backend's Pydantic enum rejected outright (400).
+export type EventSeverity = 'LOW' | 'MODERATE' | 'SEVERE'
+
 export interface EventIn {
   event_type: EventType
   start_month: number
   duration_months: number
   recovery_months: number
-  severity: 'MILD' | 'MODERATE' | 'SEVERE'
+  severity: EventSeverity
   affected_area?: Record<string, unknown> | null
   impact_params?: Record<string, unknown>
 }
@@ -459,6 +529,21 @@ export interface OptimizationRun {
   notes?: string[]
 }
 
+export interface OptimizationReadinessChecks {
+  base_simulation_exists: boolean
+  parameters_validated: boolean
+  worker_available: boolean
+  gis_roads_ready: boolean
+}
+
+export interface OptimizationReadiness {
+  can_run: boolean
+  blocking_reason: string | null
+  action_label: string | null
+  action_tab: string | null
+  checks: OptimizationReadinessChecks
+}
+
 export interface OptimizationCandidate {
   id: number
   stage: string
@@ -506,4 +591,176 @@ export interface ComparisonDeltaRow {
 export interface ComparisonDeltas {
   base_run_id: string
   deltas: Record<string, ComparisonDeltaRow[]>
+}
+
+// --- Daily Waste Logs --------------------------------------------------------
+
+export type AnomalyFlag = 'NORMAL' | 'MONSOON_FLOOD' | 'FESTIVAL_SURGE' | 'WORKER_STRIKE' | 'BREAKDOWN'
+
+export interface DailyLog {
+  id: string
+  habitation_id: string
+  logged_by: string
+  log_date: string
+  total_collected_tonnes: number
+  organic_tonnes: number
+  dry_recyclable_tonnes: number
+  hazardous_tonnes: number | null
+  vehicles_deployed: number
+  trips_completed: number
+  diesel_consumed_litres: number | null
+  collection_coverage_pct_observed: number | null
+  anomaly_flag: AnomalyFlag
+  notes: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface DailyLogIn {
+  log_date: string
+  total_collected_tonnes: number
+  organic_tonnes: number
+  dry_recyclable_tonnes: number
+  hazardous_tonnes?: number | null
+  vehicles_deployed: number
+  trips_completed: number
+  diesel_consumed_litres?: number | null
+  collection_coverage_pct_observed?: number | null
+  anomaly_flag?: AnomalyFlag
+  notes?: string | null
+}
+
+export interface DailyLogPage {
+  items: DailyLog[]
+  total: number
+  page: number
+  page_size: number
+}
+
+export interface BulkImportRowError {
+  row_number: number
+  message: string
+}
+
+export interface BulkImportResult {
+  total_rows: number
+  created_count: number
+  updated_count: number
+  error_count: number
+  errors: BulkImportRowError[]
+}
+
+export type ExportPeriodType = 'monthly' | 'yearly' | 'custom'
+
+export interface DailyLogExportParams {
+  period_type: ExportPeriodType
+  year?: number
+  month?: number
+  start_date?: string
+  end_date?: string
+  format?: 'csv' | 'xlsx'
+}
+
+// --- Recalibration / DATA_DRIVEN_HYBRID -------------------------------------
+
+export type EngineMode = 'THEORETICAL' | 'DATA_DRIVEN_HYBRID'
+
+export interface MovingAverage {
+  window_days: number
+  sample_days: number
+  avg_total_collected_tpd: number | null
+  avg_organic_tpd: number | null
+  avg_dry_recyclable_tpd: number | null
+  avg_vehicles_deployed: number | null
+  avg_coverage_pct_observed: number | null
+}
+
+export interface VarianceMetric {
+  label: string
+  theoretical: number | null
+  empirical: number | null
+  variance_pct: number | null
+}
+
+export interface RecalibrationReport {
+  habitation_id: string
+  as_of: string
+  logged_day_count_90d: number
+  moving_average_30d: MovingAverage
+  moving_average_90d: MovingAverage
+  moving_average_annual: MovingAverage
+  total_generation_variance: VarianceMetric
+  per_capita_variance: VarianceMetric
+  segregation_variance: VarianceMetric
+  fleet_efficiency_variance: VarianceMetric
+  derived_festival_multiplier: number | null
+  notes: string[]
+}
+
+// --- Auto-populate -----------------------------------------------------------
+
+export type RoadDiagnosticsStatus = 'SUCCESS' | 'NO_DATA_FOUND' | 'ERROR'
+
+export interface RoadDiagnostics {
+  status: RoadDiagnosticsStatus
+  reason: string | null
+  // [lat, lon] pairs, Overpass's own coordinate order — exactly what was
+  // sent to the poly: filter, for spotting a lat/lon-vs-lon/lat mismatch.
+  query_boundary_ring: number[][] | null
+  overpass_raw_node_count: number | null
+  overpass_raw_way_count: number | null
+  overpass_raw_relation_count: number | null
+  parsed_linestring_count: number | null
+  total_length_km: number | null
+  gis_layer_id: string | null
+}
+
+export interface SkippedCategory {
+  category: string
+  reason: string
+}
+
+export interface AutoPopulateResult {
+  parameter_set_id: string
+  automated_categories: string[]
+  skipped_categories: SkippedCategory[]
+  derived_fields: string[]
+  manual_fields_remaining: string[]
+  gis_layer_id: string | null
+  road_diagnostics: RoadDiagnostics
+}
+
+// --- Comparative scenario preview --------------------------------------------
+
+export interface ComparativePreviewIn {
+  habitation_id: string
+  base_run_id: string
+  event_type: EventType
+  severity_intensity: EventSeverity
+  duration_weeks: number
+  start_month: number
+  apply_full_boundary: boolean
+  custom_polygon_geojson?: Record<string, unknown> | null
+}
+
+export interface ComparativePreviewPoint {
+  month: number
+  base_collected_tpd: number
+  scenario_collected_tpd: number
+  base_opex_inr: number
+  scenario_opex_inr: number
+  uncollected_backlog_tonnes: number
+}
+
+export interface ComparativePreviewResult {
+  event_type: EventType
+  severity_intensity: EventSeverity
+  duration_months: number
+  start_month: number
+  horizon_months: number
+  series: ComparativePreviewPoint[]
+  peak_backlog_tonnes: number
+  net_financial_penalty_inr: number
+  recovery_time_weeks: number | null
+  notes: string[]
 }

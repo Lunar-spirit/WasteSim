@@ -10,6 +10,7 @@ services (rule 8 only restricts app/engine/).
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from collections import Counter
 from datetime import datetime, timezone
@@ -23,6 +24,7 @@ from app.core.errors import AppError
 from app.engine.coefficients import Coefficients
 from app.engine.coefficients import load as load_coefficients
 from app.engine.run import run as engine_run
+from app.gis.models import GISLayer, LayerStatus, LayerType
 from app.habitation.models import Habitation
 from app.optimization import explain, scoring, search
 from app.optimization.models import (
@@ -35,10 +37,46 @@ from app.optimization.models import (
     OptStrategy,
 )
 from app.optimization.space import DECISION_VARIABLES, build_decision_space
+from app.parameters.models import ParameterSet, ParameterSetStatus
 from app.simulation.models import CoefficientSet, RunStatus, RunType, SimulationRun
 from app.simulation.service import get_yearly_results, materialize_params
+from app.workers.celery_app import ping_workers
 
 WEIGHT_TOLERANCE = 0.001
+
+# Plain-English gloss for each machine-readable constraint code check_constraints()
+# in scoring.py can emit — used to turn "the most frequently binding one was
+# MIN_COVERAGE" into something a planner (not just a developer) can act on.
+FRIENDLY_CONSTRAINT_MESSAGES = {
+    "CAPEX_BUDGET": "the plan's capital cost exceeds the budget constraint",
+    "MIN_COVERAGE": "requested waste diversion exceeds available treatment capacity, so the required "
+    "minimum coverage cannot be reached",
+    "NO_LANDFILL_OVERFLOW": "avoiding landfill overflow needs more treatment or diversion capacity than is available",
+    "ANNUAL_BUDGET_TOLERANCE": "the plan exceeds the allowed annual operating budget in at least one year",
+}
+
+# Friendly headline for the Celery task's own generic failure path
+# (tasks_optimize.py's `except Exception`) — a real production incident this
+# session (a stale column after a migration) surfaced as a bare
+# "ProgrammingError: column ... does not exist", which is meaningless to a
+# planner even though it's exactly what a developer needs in the expandable
+# technical-details view.
+_EXCEPTION_TITLES = {
+    "ProgrammingError": "Database schema out of date",
+    "OperationalError": "Database connection error",
+    "IntegrityError": "Database constraint violation",
+    "PulpSolverError": "Solver failed to find a feasible solution",
+    "ValueError": "Invalid input to the optimizer",
+}
+
+
+def format_worker_failure(exc: Exception) -> str:
+    """Two-line `infeasible_reason` contract: a short, planner-facing
+    headline on the first line, the full exception (for the [View Details]
+    accordion) on the second — no schema change needed since the column is
+    already free-form Text."""
+    title = _EXCEPTION_TITLES.get(type(exc).__name__, "Optimization run failed unexpectedly")
+    return f"{title}\n{type(exc).__name__}: {exc}"
 
 # The "do-nothing" plan: every lever left exactly where the base run already
 # has it. Re-simulating this always reproduces the base run byte-for-byte
@@ -290,8 +328,12 @@ async def run_search(db: AsyncSession, optimization_run: OptimizationRun) -> Non
     else:
         violated_counts = Counter(v for c in candidates for v in c["violated_constraints"])
         binding = violated_counts.most_common(1)[0][0] if violated_counts else "UNKNOWN"
+        friendly = FRIENDLY_CONSTRAINT_MESSAGES.get(binding, f"the {binding} constraint could not be satisfied")
         optimization_run.status = AnalysisStatus.FAILED
+        # Two-line contract (see format_worker_failure): headline first, the
+        # exact BR-25 wording — which T-53/tests key off — second.
         optimization_run.infeasible_reason = (
+            f"Infeasible optimization constraints: {friendly}.\n"
             f"No candidate satisfied every constraint; the most frequently binding one was {binding} (BR-25)."
         )
 
@@ -304,6 +346,88 @@ async def get_optimization_or_404(db: AsyncSession, optimization_id: uuid.UUID) 
     if run is None:
         raise AppError("OPTIMIZATION_NOT_FOUND", "Optimization run not found", 404)
     return run
+
+
+async def _worker_available() -> bool:
+    # ping_workers() is a blocking network round trip to the broker — run it
+    # off the event loop, and never let a slow/unreachable broker hang this
+    # otherwise-lightweight readiness check past ~2s.
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(ping_workers, 1.0), timeout=2.0)
+    except Exception:
+        return False
+
+
+async def get_optimization_readiness(db: AsyncSession, habitation_id: uuid.UUID) -> dict[str, Any]:
+    """Pre-flight check for the Optimization tab: everything a planner needs
+    to know *before* clicking Run, checked in the order that actually blocks
+    them — no point reporting the queue is offline when they haven't even
+    run a base simulation yet."""
+    habitation = await db.get(Habitation, habitation_id)
+
+    base_simulation_exists = (
+        await db.scalar(
+            select(SimulationRun.id)
+            .where(SimulationRun.habitation_id == habitation_id, SimulationRun.status == RunStatus.COMPLETED)
+            .limit(1)
+        )
+    ) is not None
+
+    parameters_validated = False
+    if habitation is not None and habitation.active_parameter_set_id is not None:
+        ps = await db.get(ParameterSet, habitation.active_parameter_set_id)
+        parameters_validated = ps is not None and ps.status == ParameterSetStatus.VALIDATED
+
+    worker_available = await _worker_available()
+
+    gis_roads_ready = (
+        await db.scalar(
+            select(GISLayer.id)
+            .where(
+                GISLayer.habitation_id == habitation_id,
+                GISLayer.layer_type == LayerType.ROAD,
+                GISLayer.status == LayerStatus.READY,
+            )
+            .limit(1)
+        )
+    ) is not None
+
+    checks = {
+        "base_simulation_exists": base_simulation_exists,
+        "parameters_validated": parameters_validated,
+        "worker_available": worker_available,
+        "gis_roads_ready": gis_roads_ready,
+    }
+
+    if not base_simulation_exists:
+        return {
+            "can_run": False,
+            "blocking_reason": "Optimization requires a completed baseline simulation run first.",
+            "action_label": "Go to Simulations",
+            "action_tab": "simulations",
+            "checks": checks,
+        }
+    if not parameters_validated:
+        return {
+            "can_run": False,
+            "blocking_reason": "Habitation parameters must be committed in VALIDATED status.",
+            "action_label": "Review Parameters",
+            "action_tab": "parameters",
+            "checks": checks,
+        }
+    if not worker_available:
+        return {
+            "can_run": False,
+            "blocking_reason": "Optimization worker is offline. Background queue is not processing tasks.",
+            "action_label": None,
+            "action_tab": None,
+            "checks": checks,
+        }
+
+    # gis_roads_ready is advisory only (a mapped road network sharpens
+    # collection-route realism; it isn't an input the LP/search needs to be
+    # feasible), so it's reported but never blocks can_run.
+    return {"can_run": True, "blocking_reason": None, "action_label": None, "action_tab": None, "checks": checks}
 
 
 async def list_candidates(

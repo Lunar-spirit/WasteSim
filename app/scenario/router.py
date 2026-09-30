@@ -9,7 +9,7 @@ from app.core.db import get_db
 from app.core.deps import get_current_user
 from app.habitation.service import ensure_read_access, get_habitation_or_404
 from app.scenario import service
-from app.scenario.schemas import ImpactPreviewIn, ScenarioCreateIn, ScenarioEventOut
+from app.scenario.schemas import ComparativePreviewIn, ImpactPreviewIn, ScenarioCreateIn, ScenarioEventOut
 from app.simulation.schemas import SimulationRunOut
 from app.simulation.service import get_run_or_404
 from app.workers.tasks_simulate import simulate
@@ -73,4 +73,17 @@ async def preview_event_impact(
 ):
     run = await _get_run_with_access(db, run_id, current_user)
     result = await service.preview_impact(db, run.habitation_id, payload.event_type, payload.affected_area)
+    return {"success": True, "data": result}
+
+
+@router.post("/api/v1/scenarios/preview")
+async def preview_comparative_impact(
+    payload: ComparativePreviewIn,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    result = await service.preview_comparative_impact(db, payload, current_user)
+    # Read-only: no db.add()/commit() anywhere on this path (nothing is
+    # persisted — see preview_comparative_impact's own docstring), so there
+    # is nothing here to commit.
     return {"success": True, "data": result}

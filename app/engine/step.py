@@ -12,6 +12,7 @@ import math
 from typing import Any
 
 from app.engine.coefficients import Coefficients
+from app.engine.costs import safe_pow
 from app.engine.events import (
     accessibility_multiplier,
     active_event_codes,
@@ -68,7 +69,7 @@ def step(
 
     # ---- Part 1: Population ------------------------------------------
     annual_growth_pct = float(demography.get("annual_growth_rate_pct") or 0.0)
-    r_month = (1 + annual_growth_pct / 100.0) ** (1 / 12) - 1
+    r_month = safe_pow(1 + annual_growth_pct / 100.0, 1 / 12) - 1
     population = state.population * (1 + r_month)
     floating = population * float(demography.get("floating_population_pct") or 0.0) / 100.0
     surge = (
@@ -92,7 +93,7 @@ def step(
     waste_domestic = population_effective * per_capita / 1000.0  # tonnes/day
     waste_bulk = waste_domestic * coeffs["bulk_waste_pct_of_domestic"]
     industrial_base = float(industrial.get("industrial_waste_tpd") or 0.0)
-    waste_industrial = industrial_base * (1 + coeffs["industrial_growth_rate"]) ** (month / 12)
+    waste_industrial = industrial_base * safe_pow(1 + coeffs["industrial_growth_rate"], month / 12)
 
     monsoon_factor = 1.0
     if calendar_month in coeffs["monsoon_months"]:
@@ -115,6 +116,21 @@ def step(
     composition["other"] += drift * 0.10
     composition = {k: max(0.0, v) for k, v in composition.items()}
     composition = _renormalize_to_100(composition)
+
+    # generation split into the three streams a yearly summary reports
+    # (design's simplified organic/dry-recyclable/inert view of the nine
+    # canonical composition fractions — same dry-share grouping Part 6
+    # already uses for segregation, "inert" standing in for everything
+    # else: textile, inert, e-waste, other). inert_tpd is the residual
+    # rather than its own sum so the three always add back to waste_total
+    # exactly, with no drift from summing three independently-rounded shares.
+    organic_tpd = waste_total * composition["organic"] / 100.0
+    dry_recyclable_tpd = (
+        waste_total
+        * (composition["plastic"] + composition["paper"] + composition["metal"] + composition["glass"])
+        / 100.0
+    )
+    inert_tpd = max(0.0, waste_total - organic_tpd - dry_recyclable_tpd)
 
     # ---- Part 5: Collection ----------------------------------------------
     slope_pct = float(terrain.get("avg_slope_pct") or 0.0)
@@ -187,6 +203,29 @@ def step(
             capacity_added_this_month = base_capacity * 0.20
             utilization_streak = 0
 
+    # --- Fleet replacement cycle: every vehicle wears out on a fixed life
+    # (default 7 years / 84 months) regardless of capex_policy — unlike the
+    # AUTO-only growth purchases above, this is physical wear, not a
+    # planning choice, so it applies to a BASE run too. Each cohort (the
+    # vehicles bought together in one month — the starting fleet counts as
+    # one bought at month 0) is checked for its age; one at or past its
+    # life is replaced like-for-like: same count, a capex spike, fresh
+    # clock. Replacement never touches vehicles_added_cumulative, so it
+    # can't inflate vehicles_have next month the way a real new purchase
+    # does — a swap keeps the fleet the same size.
+    replacement_cycle_months = coeffs["vehicle_replacement_cycle_months"]
+    vehicles_replaced_this_month = 0
+    next_cohorts: list[tuple[int, int]] = []
+    for cohort_count, purchased_month in state.fleet_cohorts:
+        if month - purchased_month >= replacement_cycle_months:
+            vehicles_replaced_this_month += cohort_count
+            next_cohorts.append((cohort_count, month))
+        else:
+            next_cohorts.append((cohort_count, purchased_month))
+    if vehicles_added_this_month > 0:
+        next_cohorts.append((vehicles_added_this_month, month))
+    fleet_cohorts = tuple(next_cohorts)
+
     # ---- Part 10: Cost --------------------------------------------------
     opex = (
         waste_collected * days * coeffs["cost_collection_per_tonne"]
@@ -195,10 +234,10 @@ def step(
         + vehicles_have * coeffs["vehicle_monthly_opex"]
     )
     opex *= 1 + coeffs["admin_overhead_pct"]
-    opex *= (1 + coeffs["inflation_rate"]) ** (month / 12)
+    opex *= safe_pow(1 + coeffs["inflation_rate"], month / 12)
 
     capex = (
-        vehicles_added_this_month * coeffs["vehicle_capex"]
+        (vehicles_added_this_month + vehicles_replaced_this_month) * coeffs["vehicle_capex"]
         + capacity_added_this_month * coeffs["treatment_capex_per_tpd"]
     )
 
@@ -220,6 +259,7 @@ def step(
         utilization_streak_months=utilization_streak,
         capacity_added_this_month=capacity_added_this_month,
         vehicles_added_this_month=vehicles_added_this_month,
+        fleet_cohorts=fleet_cohorts,
     )
 
     snapshot = {
@@ -234,6 +274,13 @@ def step(
         "waste_bulk_tpd": waste_bulk,
         "waste_industrial_tpd": waste_industrial,
         "waste_total_tpd": waste_total,
+        # Same generation total as waste_total_tpd, split three ways — see
+        # the comment above Part 5 for how the nine composition fractions
+        # map onto this simplified view. organic_tpd + dry_recyclable_tpd +
+        # inert_tpd == waste_total_tpd exactly, by construction.
+        "organic_tpd": organic_tpd,
+        "dry_recyclable_tpd": dry_recyclable_tpd,
+        "inert_tpd": inert_tpd,
         "composition": dict(composition),
         "collection_coverage_pct": coverage,
         "accessibility_index": accessibility,
@@ -267,6 +314,7 @@ def step(
         # app/budget/service.py can split capex_inr into FLEET_PURCHASE vs
         # INFRASTRUCTURE budget_lines without re-deriving them from state.
         "vehicles_added_this_month": vehicles_added_this_month,
+        "vehicles_replaced_this_month": vehicles_replaced_this_month,
         "capacity_added_this_month": capacity_added_this_month,
         "ghg_tco2e": ghg_net,
         "active_event_codes": active_event_codes(active_events),

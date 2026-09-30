@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.simulation.models import RunStatus, RunType
+from app.simulation.models import EngineMode, RunStatus, RunType
 
 
 class SimulationCreateIn(BaseModel):
@@ -15,6 +15,11 @@ class SimulationCreateIn(BaseModel):
     horizon_years: int = Field(default=20, ge=1, le=30)
     param_overrides: dict[str, Any] = Field(default_factory=dict)
     config: dict[str, Any] = Field(default_factory=dict)
+    # THEORETICAL (default): starts purely from the declared parameter set,
+    # same as every run before this existed. DATA_DRIVEN_HYBRID: merged
+    # into `config` under the "engine_mode" key (see app/simulation/models.py's
+    # EngineMode) rather than a dedicated column.
+    engine_mode: EngineMode = EngineMode.THEORETICAL
 
 
 class SimulationRunOut(BaseModel):

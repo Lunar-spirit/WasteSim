@@ -50,6 +50,13 @@ class State:
     utilization_streak_months: int = 0
     capacity_added_this_month: float = 0.0
     vehicles_added_this_month: int = 0
+    # Vehicle cohorts for the 7-year replacement cycle: (count, purchased_month)
+    # pairs, one per batch of vehicles bought together — the starting fleet
+    # counts as a single cohort bought at month 0. A tuple, not a list: State
+    # is otherwise all-immutable-in-spirit (a new State each step, never
+    # mutated in place), and a tuple can't accidentally be shared/mutated
+    # across steps the way a list default would risk.
+    fleet_cohorts: tuple[tuple[int, int], ...] = ()
 
 
 def initial_state(params: dict, coeffs: Coefficients, config: dict | None = None) -> State:
@@ -60,11 +67,22 @@ def initial_state(params: dict, coeffs: Coefficients, config: dict | None = None
 
     population = float(demography["population"])
 
-    per_capita = baseline.get("per_capita_generation_kg_day")
-    if per_capita is None:
-        # BR-05: the missing one is derived from the other using population.
-        total_tpd = float(baseline["total_generation_tpd"])
-        per_capita = (total_tpd * 1000.0) / population if population else 0.0
+    # DATA_DRIVEN_HYBRID mode (app/analytics/recalibration.py, called from
+    # app/simulation/service.py's execute_run() — never from here): the
+    # caller has already computed a real per-capita figure from
+    # daily_waste_logs and hands it in as plain config, same shape as every
+    # other override this function already reads. Still a pure function of
+    # its arguments either way — rule #8 is about this module never doing
+    # its own I/O, not about who computed the numbers it's given.
+    override_per_capita = config.get("override_starting_per_capita_kg_day")
+    if override_per_capita is not None:
+        per_capita = float(override_per_capita)
+    else:
+        per_capita = baseline.get("per_capita_generation_kg_day")
+        if per_capita is None:
+            # BR-05: the missing one is derived from the other using population.
+            total_tpd = float(baseline["total_generation_tpd"])
+            per_capita = (total_tpd * 1000.0) / population if population else 0.0
 
     composition = normalize_composition(baseline.get("composition") or {"organic": 100.0})
 
@@ -80,6 +98,16 @@ def initial_state(params: dict, coeffs: Coefficients, config: dict | None = None
     # unchanged for every run this project already has tests for.
     landfill_remaining += float(config.get("plan_added_landfill_tonnes", 0.0))
 
+    # Everything present at month 0 — the starting fleet plus an
+    # OPTIMIZED plan's immediate add_vehicles — is treated as one cohort
+    # bought "before month 1", so it starts the 7-year replacement clock
+    # from the same point a real fleet's purchase history would, absent
+    # any per-vehicle age data in the schema to do better than that.
+    starting_vehicles = int(community.get("collection_vehicles_count") or 0) + int(
+        config.get("plan_added_vehicles", 0)
+    )
+    fleet_cohorts = ((starting_vehicles, 0),) if starting_vehicles > 0 else ()
+
     return State(
         population=population,
         per_capita_kg_day=float(per_capita),
@@ -92,4 +120,5 @@ def initial_state(params: dict, coeffs: Coefficients, config: dict | None = None
         # math (which already reads *_added_cumulative) needs no change.
         vehicles_added_cumulative=int(config.get("plan_added_vehicles", 0)),
         capacity_added_cumulative=float(config.get("plan_added_treatment_capacity_tpd", 0.0)),
+        fleet_cohorts=fleet_cohorts,
     )

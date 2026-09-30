@@ -91,4 +91,11 @@ class HabitationMember(Base):
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE")
     )
     access_level: Mapped[AccessLevel] = mapped_column(Enum(AccessLevel, name="access_level"))
+    # Who granted this row, for the admin access-control audit trail. NULL
+    # for the OWNER row create_habitation() adds automatically (self-granted,
+    # nobody "assigned" it) — only ever set for rows an ADMIN creates via
+    # POST /api/v1/admin/access/assign.
+    assigned_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

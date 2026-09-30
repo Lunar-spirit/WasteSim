@@ -216,3 +216,147 @@ async def test_recovery_ramp_is_gradual_not_instant(client, planner_headers):
     assert series[7] > series[6]
     assert series[8] > series[7]
     assert series[9] == series[4]
+
+
+async def test_comparative_preview_shows_divergence_during_event_and_recovers(client, planner_headers):
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "CompPreviewVille")
+    base_run_id = await _make_completed_base_run(client, planner_headers, habitation_id, horizon_years=2)
+
+    resp = await client.post(
+        "/api/v1/scenarios/preview",
+        headers=planner_headers,
+        json={
+            "habitation_id": habitation_id,
+            "base_run_id": base_run_id,
+            "event_type": "STRIKE",
+            "severity_intensity": "SEVERE",
+            "duration_weeks": 4,
+            "start_month": 6,
+            "apply_full_boundary": False,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()["data"]
+
+    assert data["horizon_months"] == 24
+    assert len(data["series"]) == 24
+    assert data["duration_months"] == 1  # 4 weeks -> ~1 month
+
+    before = next(row for row in data["series"] if row["month"] == 5)
+    during = next(row for row in data["series"] if row["month"] == 6)
+    assert before["base_collected_tpd"] == pytest.approx(before["scenario_collected_tpd"])
+    assert during["scenario_collected_tpd"] < during["base_collected_tpd"]
+    assert during["uncollected_backlog_tonnes"] > 0
+
+    late = next(row for row in data["series"] if row["month"] == 24)
+    assert late["scenario_collected_tpd"] == pytest.approx(late["base_collected_tpd"], rel=1e-3)
+
+    assert data["peak_backlog_tonnes"] > 0
+    # A coverage-only event like STRIKE genuinely reduces measured opex (less
+    # material moves through the paid chain) since no cleanup-overtime cost is
+    # modelled — the real cost is the backlog above, not this figure's sign.
+    assert data["net_financial_penalty_inr"] is not None
+    assert any("negative" in note for note in data["notes"])
+    assert data["recovery_time_weeks"] is not None
+    assert data["recovery_time_weeks"] > 0
+    assert any("plateau" in note for note in data["notes"])
+
+
+async def test_comparative_preview_rejects_festival_double_counting(client, planner_headers):
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "FestivalRejectVille")
+    base_run_id = await _make_completed_base_run(client, planner_headers, habitation_id, horizon_years=1)
+
+    resp = await client.post(
+        "/api/v1/scenarios/preview",
+        headers=planner_headers,
+        json={
+            "habitation_id": habitation_id,
+            "base_run_id": base_run_id,
+            "event_type": "FESTIVAL",
+            "duration_weeks": 2,
+            "start_month": 3,
+        },
+    )
+    assert resp.status_code == 422, resp.text
+    assert resp.json()["error"]["code"] == "EVENT_TYPE_NOT_PREVIEWABLE"
+
+
+async def test_comparative_preview_requires_completed_base_run(client, planner_headers):
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "PreviewNotCompleteVille")
+    create_resp = await client.post(
+        f"/api/v1/habitations/{habitation_id}/simulations", json={"horizon_years": 1}, headers=planner_headers
+    )
+    queued_run_id = create_resp.json()["data"]["id"]  # never executed -> still QUEUED
+
+    resp = await client.post(
+        "/api/v1/scenarios/preview",
+        headers=planner_headers,
+        json={
+            "habitation_id": habitation_id,
+            "base_run_id": queued_run_id,
+            "event_type": "STRIKE",
+            "duration_weeks": 2,
+            "start_month": 3,
+        },
+    )
+    assert resp.status_code == 409, resp.text
+    assert resp.json()["error"]["code"] == "BASE_RUN_NOT_COMPLETED"
+
+
+async def test_comparative_preview_rejects_window_past_horizon(client, planner_headers):
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "PreviewWindowVille")
+    base_run_id = await _make_completed_base_run(client, planner_headers, habitation_id, horizon_years=1)
+
+    resp = await client.post(
+        "/api/v1/scenarios/preview",
+        headers=planner_headers,
+        json={
+            "habitation_id": habitation_id,
+            "base_run_id": base_run_id,
+            "event_type": "STRIKE",
+            "duration_weeks": 8,  # ~2 months
+            "start_month": 12,  # 12 + 2 - 1 = window ends month 13 > 12-month horizon
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    assert resp.json()["error"]["code"] == "EVENT_WINDOW_OUT_OF_RANGE"
+
+
+async def test_comparative_preview_researcher_can_read_but_not_write_a_real_scenario(
+    client, planner_headers, researcher_headers
+):
+    habitation_id, _psid = await _make_ready_habitation(client, planner_headers, "PreviewResearcherVille")
+    base_run_id = await _make_completed_base_run(client, planner_headers, habitation_id, horizon_years=1)
+
+    resp = await client.post(
+        "/api/v1/scenarios/preview",
+        headers=researcher_headers,
+        json={
+            "habitation_id": habitation_id,
+            "base_run_id": base_run_id,
+            "event_type": "STRIKE",
+            "duration_weeks": 2,
+            "start_month": 3,
+        },
+    )
+    assert resp.status_code == 200, resp.text  # preview is read-only — RESEARCHER can always read
+
+
+async def test_comparative_preview_derives_road_loss_from_full_boundary(client, planner_headers):
+    habitation_id, _psid = await _make_ready_habitation_with_road(client, planner_headers, "PreviewBoundaryVille")
+    base_run_id = await _make_completed_base_run(client, planner_headers, habitation_id, horizon_years=1)
+
+    resp = await client.post(
+        "/api/v1/scenarios/preview",
+        headers=planner_headers,
+        json={
+            "habitation_id": habitation_id,
+            "base_run_id": base_run_id,
+            "event_type": "FLOOD",
+            "duration_weeks": 4,
+            "start_month": 2,
+            "apply_full_boundary": True,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert any("derived" in note for note in resp.json()["data"]["notes"])

@@ -69,6 +69,12 @@ _DEFAULTS: dict[str, Any] = {
     "avg_vehicle_capacity_tonnes": 5.0,
     "trips_per_vehicle_day": 2.0,
     "fleet_availability": 0.85,
+    # A collection vehicle's typical usable operational life (design ask:
+    # "model vehicle operational life") — every cohort of vehicles is
+    # replaced like-for-like once it reaches this age, independent of
+    # capex_policy, generating a capex spike whether or not the fleet is
+    # also growing.
+    "vehicle_replacement_cycle_months": 84,  # 7 years
     # A transfer station shortens the round trip to disposal, so each vehicle
     # manages more trips/day. Design 5.6 names the effect ("improves effective
     # trips per vehicle per day") without a magnitude — this figure is a

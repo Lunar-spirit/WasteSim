@@ -1,43 +1,39 @@
 import { useMutation } from '@tanstack/react-query'
 import { Bot, Loader2, Send, Sparkles, User, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
-import { createChatSession, sendChatQuery } from '../api/endpoints'
+import { sendFloatingChatMessage } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
-import type { ChatMessage } from '../types/api'
+import { renderMarkdownLite } from '../lib/markdownLite'
+import type { ChatCitation, ChatHistoryTurn } from '../types/api'
 
-const QUICK_PROMPTS = ['Summarize 10-year budget', 'Are there any vehicle shortages?']
+// Shown only while the conversation is empty — a first-time user's fastest
+// path into the three things the copilot is built to help with.
+const QUICK_PROMPTS = [
+  'Why is my optimization not running?',
+  'How do I calibrate waste parameters?',
+  'Explain my latest simulation results',
+]
 
 interface LocalMessage {
   id: string | number
   role: 'USER' | 'ASSISTANT'
   content: string
-  citations?: ChatMessage['citations']
+  citations?: ChatCitation[]
 }
 
 export default function ChatDrawer() {
-  const { isCopilotOpen, setIsCopilotOpen, currentHabitationId, activeRunId } = useAppContext()
-  const [sessionId, setSessionId] = useState<string | null>(null)
+  const { isCopilotOpen, setIsCopilotOpen, currentHabitationId } = useAppContext()
   const [messages, setMessages] = useState<LocalMessage[]>([])
+  const [history, setHistory] = useState<ChatHistoryTurn[]>([])
   const [input, setInput] = useState('')
   const scrollRef = useRef<HTMLDivElement | null>(null)
 
-  const sessionMutation = useMutation({
-    mutationFn: () => createChatSession(currentHabitationId),
-    onSuccess: (session) => setSessionId(session.id),
-  })
-
-  // A fresh session per habitation, created lazily the first time the
-  // drawer opens for it (design: "the session is bound to one habitation").
+  // The copilot is bound to whichever habitation is active in the header —
+  // switching habitations starts a fresh conversation rather than mixing
+  // context from two different habitations in one running history.
   useEffect(() => {
-    if (isCopilotOpen && !sessionId && !sessionMutation.isPending) {
-      sessionMutation.mutate()
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCopilotOpen])
-
-  useEffect(() => {
-    setSessionId(null)
     setMessages([])
+    setHistory([])
   }, [currentHabitationId])
 
   useEffect(() => {
@@ -45,12 +41,13 @@ export default function ChatDrawer() {
   }, [messages])
 
   const queryMutation = useMutation({
-    mutationFn: (text: string) => sendChatQuery(sessionId as string, text, activeRunId),
-    onSuccess: (assistantMessage) => {
+    mutationFn: (text: string) => sendFloatingChatMessage(currentHabitationId || null, text, history),
+    onSuccess: (reply) => {
       setMessages((prev) => [
         ...prev,
-        { id: assistantMessage.id, role: 'ASSISTANT', content: assistantMessage.content, citations: assistantMessage.citations },
+        { id: `a-${Date.now()}`, role: 'ASSISTANT', content: reply.content, citations: reply.citations },
       ])
+      setHistory((prev) => [...prev, { role: 'assistant', content: reply.content }])
     },
     onError: (error: Error) => {
       setMessages((prev) => [...prev, { id: `err-${Date.now()}`, role: 'ASSISTANT', content: `Error: ${error.message}` }])
@@ -59,8 +56,9 @@ export default function ChatDrawer() {
 
   function handleSend(text: string) {
     const trimmed = text.trim()
-    if (!trimmed || !sessionId || queryMutation.isPending) return
+    if (!trimmed || queryMutation.isPending) return
     setMessages((prev) => [...prev, { id: `local-${Date.now()}`, role: 'USER', content: trimmed }])
+    setHistory((prev) => [...prev, { role: 'user', content: trimmed }])
     setInput('')
     queryMutation.mutate(trimmed)
   }
@@ -83,7 +81,7 @@ export default function ChatDrawer() {
         <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <div className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-emerald-600" />
-            <h2 className="text-sm font-semibold text-slate-800">AI Copilot</h2>
+            <h2 className="text-sm font-semibold text-slate-800">SWMS Assistant</h2>
           </div>
           <button
             type="button"
@@ -96,15 +94,24 @@ export default function ChatDrawer() {
         </header>
 
         <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
-          {sessionMutation.isPending && (
-            <div className="flex items-center gap-2 text-xs text-slate-400">
-              <Loader2 className="h-3.5 w-3.5 animate-spin" /> Starting session…
+          {messages.length === 0 && (
+            <div className="flex flex-col gap-3">
+              <p className="text-sm text-slate-400">
+                Ask about parameters, simulations, or optimization — or try one of these:
+              </p>
+              <div className="flex flex-col gap-1.5">
+                {QUICK_PROMPTS.map((prompt) => (
+                  <button
+                    key={prompt}
+                    type="button"
+                    onClick={() => handleSend(prompt)}
+                    className="rounded-lg border border-slate-200 px-3 py-2 text-left text-xs text-slate-600 transition hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700"
+                  >
+                    {prompt}
+                  </button>
+                ))}
+              </div>
             </div>
-          )}
-          {messages.length === 0 && !sessionMutation.isPending && (
-            <p className="text-sm text-slate-400">
-              Ask about this habitation's budget, coverage, findings, or anything else grounded in its stored runs.
-            </p>
           )}
           {messages.map((message) => (
             <div key={message.id} className={`flex gap-2 ${message.role === 'USER' ? 'flex-row-reverse' : ''}`}>
@@ -122,7 +129,11 @@ export default function ChatDrawer() {
                     : 'rounded-tl-sm bg-slate-100 text-slate-800'
                 }`}
               >
-                <p className="whitespace-pre-wrap">{message.content}</p>
+                {message.role === 'ASSISTANT' ? (
+                  renderMarkdownLite(message.content)
+                ) : (
+                  <p className="whitespace-pre-wrap">{message.content}</p>
+                )}
                 {message.citations && message.citations.length > 0 && (
                   <div className="mt-1.5 flex flex-wrap gap-1">
                     {message.citations.map((citation, idx) => {
@@ -149,20 +160,6 @@ export default function ChatDrawer() {
           )}
         </div>
 
-        <div className="flex flex-wrap gap-1.5 border-t border-slate-100 px-4 pt-3">
-          {QUICK_PROMPTS.map((prompt) => (
-            <button
-              key={prompt}
-              type="button"
-              onClick={() => handleSend(prompt)}
-              disabled={!sessionId || queryMutation.isPending}
-              className="rounded-full border border-slate-200 px-2.5 py-1 text-[11px] text-slate-600 transition hover:border-emerald-300 hover:text-emerald-700 disabled:opacity-50"
-            >
-              {prompt}
-            </button>
-          ))}
-        </div>
-
         <form
           onSubmit={(e) => {
             e.preventDefault()
@@ -175,12 +172,11 @@ export default function ChatDrawer() {
             value={input}
             onChange={(e) => setInput(e.target.value)}
             placeholder="Ask the copilot…"
-            disabled={!sessionId}
-            className="flex-1 rounded-full border border-slate-300 px-4 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:bg-slate-50"
+            className="flex-1 rounded-full border border-slate-300 px-4 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
           />
           <button
             type="submit"
-            disabled={!sessionId || !input.trim() || queryMutation.isPending}
+            disabled={!input.trim() || queryMutation.isPending}
             className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-white transition hover:bg-emerald-700 disabled:opacity-50"
             aria-label="Send"
           >

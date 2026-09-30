@@ -4,6 +4,7 @@ later) calls run() hundreds of times per search.
 """
 
 import copy
+import math
 
 import pytest
 
@@ -188,6 +189,87 @@ def test_engine_package_imports_nothing_from_app_outside_itself():
                 if name and name.startswith("app.") and not name.startswith("app.engine"):
                     violations.append(f"{path.name}: imports {name}")
     assert not violations, "app/engine/ must not import from app/ outside itself:\n" + "\n".join(violations)
+
+
+def test_yearly_organic_dry_inert_sum_to_waste_total():
+    result = run(BASE_PARAMS, events=[], coeffs_raw={}, months=24)
+    for year in result["yearly"]:
+        streams = year["organic_tpy"] + year["dry_recyclable_tpy"] + year["inert_tpy"]
+        assert streams == pytest.approx(year["waste_total_tpy"], rel=1e-6)
+
+
+def test_yearly_cumulative_landfill_tonnes_matches_last_month_of_year():
+    result = run(BASE_PARAMS, events=[], coeffs_raw={}, months=24)
+    year_1_last_month = result["monthly"][11]
+    assert result["yearly"][0]["cumulative_landfill_tonnes"] == pytest.approx(
+        year_1_last_month["landfill_cumulative_tonnes"]
+    )
+
+
+def test_fleet_is_replaced_on_its_seven_year_cycle_even_with_no_shortfall():
+    # A generously oversized fleet (no shortfall ever) with capex_policy
+    # NONE — the only capex this run should ever show is the replacement
+    # cycle kicking in at month 84 (year 7) and again at month 168 (year 14).
+    params = _params(**{"community_infrastructure.collection_vehicles_count": 50})
+    result = run(params, events=[], coeffs_raw={}, months=240)
+
+    replaced_months = [m["month_index"] for m in result["monthly"] if m["vehicles_replaced_this_month"] > 0]
+    assert replaced_months == [84, 168]
+    for m in result["monthly"]:
+        if m["month_index"] in (84, 168):
+            assert m["vehicles_replaced_this_month"] == 50
+            assert m["capex_inr"] > 0
+            assert m["vehicle_shortfall"] == 0  # replacement never shows up as a shortfall
+        else:
+            assert m["vehicles_replaced_this_month"] == 0
+
+
+def test_fleet_replacement_does_not_inflate_vehicles_have():
+    params = _params(**{"community_infrastructure.collection_vehicles_count": 50})
+    result = run(params, events=[], coeffs_raw={}, months=90)
+    vehicle_counts = {m["vehicles_have"] for m in result["monthly"]}
+    assert vehicle_counts == {50}, f"a replacement changed the fleet size: {vehicle_counts}"
+
+
+def test_extreme_negative_growth_stays_finite_and_real():
+    # BR safety: an annual_growth_rate_pct steeper than -100% would send a
+    # negative base into a fractional-exponent compounding formula, which
+    # Python silently turns complex rather than raising — this must never
+    # reach the rest of the run as anything but a plain finite float.
+    params = _params(**{"demography.annual_growth_rate_pct": -150.0})
+    result = run(params, events=[], coeffs_raw={}, months=24)
+    for m in result["monthly"]:
+        assert isinstance(m["population"], int)  # never complex, never NaN
+        assert m["population"] >= 0
+        assert math.isfinite(m["waste_total_tpd"])
+
+
+def test_pathological_coefficient_does_not_crash_the_run():
+    # A coefficient_set is user-editable JSONB — a wildly miscalibrated
+    # inflation_rate must degrade the run (huge but finite cost), not raise
+    # OverflowError and take the whole simulation down.
+    result = run(BASE_PARAMS, events=[], coeffs_raw={"inflation_rate": 500.0}, months=240)
+    for m in result["monthly"]:
+        assert math.isfinite(m["opex_inr"])
+
+
+def test_override_starting_per_capita_replaces_baseline_value():
+    # DATA_DRIVEN_HYBRID mode's one engine-facing hook (app/engine/state.py):
+    # the caller (app/analytics/recalibration.py, via app/simulation/
+    # service.py) can hand in an empirical starting per-capita figure that
+    # wins over waste_baseline.per_capita_generation_kg_day, with growth/
+    # elasticity compounding forward from it exactly as normal afterwards.
+    baseline_result = run(BASE_PARAMS, events=[], coeffs_raw={}, months=1)
+    assert baseline_result["monthly"][0]["per_capita_kg_day"] == pytest.approx(0.45, rel=1e-2)
+
+    overridden_result = run(
+        BASE_PARAMS, events=[], coeffs_raw={}, months=1, config={"override_starting_per_capita_kg_day": 0.62}
+    )
+    # Not exactly 0.62: month 1's own elasticity-driven step still applies
+    # on top of the override, same as it would on top of a baseline value —
+    # a generous tolerance here just confirms "starts near the override",
+    # not "the engine skips its own Part 2 math for month 1".
+    assert overridden_result["monthly"][0]["per_capita_kg_day"] == pytest.approx(0.62, rel=1e-2)
 
 
 def test_a_240_month_run_completes_well_under_50ms():

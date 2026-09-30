@@ -4,9 +4,9 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.models import User
+from app.auth.models import User, UserRole
 from app.core.db import get_db
-from app.core.deps import check_habitation_access, get_current_user
+from app.core.deps import check_editable_by_owner_or_role, check_habitation_access, get_current_user
 from app.habitation.models import AccessLevel
 from app.parameters import service
 from app.parameters.schemas import (
@@ -26,7 +26,12 @@ async def create_parameter_set(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    await check_habitation_access(db, current_user, habitation_id, AccessLevel.EDITOR)
+    # A RESEARCHER always may — this is "clone parameter sets into private
+    # drafts", one of the access-control invariants: it creates a new DRAFT
+    # owned by them (created_by=current_user.id below), not a write to the
+    # habitation's official state. Anyone else still needs EDITOR access.
+    if current_user.role != UserRole.RESEARCHER:
+        await check_habitation_access(db, current_user, habitation_id, AccessLevel.EDITOR)
     ps = await service.create_parameter_set(db, habitation_id, payload, current_user)
     await db.commit()
     return {"success": True, "data": ParameterSetOut.model_validate(ps)}
@@ -41,7 +46,7 @@ async def upsert_category(
     db: AsyncSession = Depends(get_db),
 ):
     ps = await service.get_parameter_set_or_404(db, psid)
-    await check_habitation_access(db, current_user, ps.habitation_id, AccessLevel.EDITOR)
+    await check_editable_by_owner_or_role(db, current_user, ps.habitation_id, ps.created_by)
     row = await service.upsert_category(db, psid, category, payload)
     await db.commit()
     data = {c: getattr(row, c) for c in row.__table__.columns.keys() if c != "parameter_set_id"}
@@ -56,7 +61,7 @@ async def upsert_waste_baseline(
     db: AsyncSession = Depends(get_db),
 ):
     ps = await service.get_parameter_set_or_404(db, psid)
-    await check_habitation_access(db, current_user, ps.habitation_id, AccessLevel.EDITOR)
+    await check_editable_by_owner_or_role(db, current_user, ps.habitation_id, ps.created_by)
     row = await service.upsert_waste_baseline(db, psid, payload.model_dump(exclude_unset=True))
     await db.commit()
     return {

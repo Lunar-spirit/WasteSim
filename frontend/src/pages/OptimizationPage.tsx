@@ -1,29 +1,56 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Loader2, Target, Zap } from 'lucide-react'
+import { AlertTriangle, ChevronDown, ChevronRight, Loader2, Target, Zap } from 'lucide-react'
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { CartesianGrid, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts'
 import {
   createOptimization,
   fetchOptimization,
   fetchOptimizationCandidates,
+  fetchOptimizationReadiness,
   fetchParetoFront,
   listSimulations,
   promoteOptimizationCandidate,
 } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
+import { useSelectedBaseRun } from '../lib/baseRun'
 import { pushHistory, useHistory } from '../lib/history'
 import type { AnalysisStatus, OptimizationCandidate } from '../types/api'
 
 const POLL_STATUSES: AnalysisStatus[] = ['QUEUED', 'RUNNING']
 const MAX_EVALUATIONS = 150
 
+// The backend's action_tab is a semantic token ("simulations", "parameters"),
+// not a literal route — this is the one place that maps it to a real path.
+const ACTION_TAB_ROUTES: Record<string, string> = {
+  simulations: '/simulation',
+  parameters: '/parameters',
+}
+
+/** Splits the two-line `infeasible_reason` contract (app/optimization/service.py's
+ * format_worker_failure / the infeasible-constraints message): a short
+ * planner-facing headline on the first line, full technical detail after. */
+function splitFailureReason(reason: string): { headline: string; detail: string | null } {
+  const newlineIndex = reason.indexOf('\n')
+  if (newlineIndex === -1) return { headline: reason, detail: null }
+  return { headline: reason.slice(0, newlineIndex), detail: reason.slice(newlineIndex + 1) }
+}
+
 export default function OptimizationPage() {
   const { currentHabitationId, activeRunId, setActiveRunId } = useAppContext()
+  const navigate = useNavigate()
+  const [showFailureDetails, setShowFailureDetails] = useState(false)
+
+  const readinessQuery = useQuery({
+    queryKey: ['optimization-readiness', currentHabitationId],
+    queryFn: () => fetchOptimizationReadiness(currentHabitationId),
+  })
+  const readiness = readinessQuery.data
+  const blockedByReadiness = readiness ? !readiness.can_run : false
 
   const runsQuery = useQuery({ queryKey: ['simulations', currentHabitationId], queryFn: () => listSimulations(currentHabitationId) })
   const baseRuns = (runsQuery.data ?? []).filter((r) => r.run_type === 'BASE' && r.status === 'COMPLETED')
-  const [baseRunId, setBaseRunId] = useState<string | null>(activeRunId)
-  const effectiveBaseRunId = baseRunId ?? activeRunId
+  const [effectiveBaseRunId, setBaseRunId] = useSelectedBaseRun(baseRuns, activeRunId)
 
   const [wCost, setWCost] = useState(50)
   const [wDiversion, setWDiversion] = useState(30)
@@ -149,10 +176,29 @@ export default function OptimizationPage() {
             <input type="range" min="0" max="100" value={wCarbon} onChange={(e) => setWCarbon(Number(e.target.value))} className="accent-emerald-600" />
           </label>
         </div>
+        {readiness && blockedByReadiness && (
+          <div className="mt-4 flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm shadow-sm">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-amber-600" />
+            <div className="flex-1">
+              <p className="text-xs font-semibold uppercase tracking-wide text-amber-800">Cannot Run Optimization</p>
+              <p className="mt-0.5 text-amber-900">{readiness.blocking_reason}</p>
+              {readiness.action_label && readiness.action_tab && (
+                <button
+                  type="button"
+                  onClick={() => navigate(ACTION_TAB_ROUTES[readiness.action_tab as string] ?? '/')}
+                  className="mt-2 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-800 transition hover:bg-amber-100"
+                >
+                  {readiness.action_label}
+                </button>
+              )}
+            </div>
+          </div>
+        )}
+
         <button
           type="button"
           onClick={() => createMutation.mutate()}
-          disabled={!effectiveBaseRunId || createMutation.isPending || isRunning}
+          disabled={!effectiveBaseRunId || createMutation.isPending || isRunning || blockedByReadiness}
           className="mt-4 flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
         >
           {createMutation.isPending || isRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Target className="h-4 w-4" />}
@@ -171,8 +217,34 @@ export default function OptimizationPage() {
             <div className="h-2 w-full overflow-hidden rounded-full bg-slate-100">
               <div className="h-2 rounded-full bg-emerald-500 transition-all" style={{ width: `${progressPct}%` }} />
             </div>
-            {optimizationQuery.data.infeasible_reason && (
-              <p className="mt-2 text-xs text-red-600">{optimizationQuery.data.infeasible_reason}</p>
+            {optimizationQuery.data.status === 'FAILED' && optimizationQuery.data.infeasible_reason && (
+              <div className="mt-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs">
+                {(() => {
+                  const { headline, detail } = splitFailureReason(optimizationQuery.data.infeasible_reason)
+                  return (
+                    <>
+                      <p className="font-medium text-red-700">Solver failed: {headline}</p>
+                      {detail && (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setShowFailureDetails((v) => !v)}
+                            className="mt-1 flex items-center gap-1 text-red-600 hover:text-red-800"
+                          >
+                            {showFailureDetails ? <ChevronDown className="h-3 w-3" /> : <ChevronRight className="h-3 w-3" />}
+                            View Details
+                          </button>
+                          {showFailureDetails && (
+                            <pre className="mt-1 whitespace-pre-wrap break-words rounded-md bg-red-100/60 p-2 text-[11px] text-red-800">
+                              {detail}
+                            </pre>
+                          )}
+                        </>
+                      )}
+                    </>
+                  )
+                })()}
+              </div>
             )}
           </div>
         )}

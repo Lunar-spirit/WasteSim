@@ -35,17 +35,11 @@ import {
 } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
 import { setDraftPsid } from '../lib/history'
-import type { BudgetLine, ReportStatus, RunStatus, SimulationYearly } from '../types/api'
+import { formatCrores, formatInr } from '../lib/format'
+import type { BudgetLine, EngineMode, ReportStatus, RunStatus, SimulationYearly } from '../types/api'
+import AnalyticsTab from '../components/reports/AnalyticsTab'
 
-const HORIZON_YEARS = 10
-
-function formatCrores(value: number): string {
-  return `₹${(value / 1e7).toFixed(2)} Cr`
-}
-
-function formatInr(value: number): string {
-  return `₹${value.toLocaleString('en-IN', { maximumFractionDigits: 0 })}`
-}
+const HORIZON_YEARS = 20
 
 const RUN_POLL_STATUSES: RunStatus[] = ['QUEUED', 'RUNNING']
 const REPORT_POLL_STATUSES: ReportStatus[] = ['QUEUED', 'GENERATING']
@@ -92,7 +86,7 @@ function TrajectoryTab({ series, isLoading }: { series: SimulationYearly[]; isLo
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">10-Year Trajectory</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">20-Year Trajectory</h2>
         <div className="flex flex-wrap gap-1">
           {INDICATOR_OPTIONS.map((opt) => (
             <button
@@ -118,7 +112,7 @@ function TrajectoryTab({ series, isLoading }: { series: SimulationYearly[]; isLo
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
             <XAxis dataKey="year_index" tickFormatter={(v) => `Yr ${v}`} stroke="#64748b" fontSize={12} />
             <YAxis stroke="#64748b" fontSize={12} tickFormatter={(v: number) => (v > 100000 ? `${(v / 1e5).toFixed(0)}L` : `${v}`)} />
-            <Tooltip formatter={(value: number) => active.format(value)} labelFormatter={(v) => `Year ${v}`} />
+            <Tooltip formatter={(value) => active.format(Number(value))} labelFormatter={(v) => `Year ${v}`} />
             <Legend />
             <Line type="monotone" dataKey={indicator} name={active.label} stroke="#10b981" strokeWidth={2.5} dot={{ r: 3 }} />
           </LineChart>
@@ -248,12 +242,13 @@ function FindingsTab({ runId }: { runId: string | null }) {
 export default function SimulationPage() {
   const { currentHabitationId, activeRunId, setActiveRunId } = useAppContext()
   const queryClient = useQueryClient()
-  const [tab, setTab] = useState<'trajectory' | 'budget' | 'findings'>('trajectory')
+  const [tab, setTab] = useState<'trajectory' | 'analytics' | 'budget' | 'findings'>('trajectory')
 
   const [perCapitaKgDay, setPerCapitaKgDay] = useState(0.38)
   const [vehicleCount, setVehicleCount] = useState(4)
   const [coveragePct, setCoveragePct] = useState(85)
   const [annualBudgetInr, setAnnualBudgetInr] = useState(25_00_000)
+  const [engineMode, setEngineMode] = useState<EngineMode>('THEORETICAL')
   const [autoPopulateStatus, setAutoPopulateStatus] = useState<string | null>(null)
 
   const autoPopulateMutation = useMutation({
@@ -288,6 +283,7 @@ export default function SimulationPage() {
           'community_infrastructure.collection_coverage_pct': coveragePct,
           'economic_conditions.swm_annual_budget': annualBudgetInr,
         },
+        engine_mode: engineMode,
       }),
     onSuccess: (run) => setActiveRunId(run.id),
   })
@@ -383,6 +379,23 @@ export default function SimulationPage() {
             <span className="font-medium text-slate-700">Annual SWM budget (INR)</span>
             <input type="number" step="10000" min="0" value={annualBudgetInr} onChange={(e) => setAnnualBudgetInr(Number(e.target.value))} className="rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500" />
           </label>
+          <label className="flex flex-col gap-1 text-sm">
+            <span className="font-medium text-slate-700">Engine mode</span>
+            <select
+              value={engineMode}
+              onChange={(e) => setEngineMode(e.target.value as EngineMode)}
+              className="rounded-md border border-slate-300 bg-white px-3 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500"
+            >
+              <option value="THEORETICAL">Theoretical (declared parameters)</option>
+              <option value="DATA_DRIVEN_HYBRID">Data-driven hybrid (recalibrated from logs)</option>
+            </select>
+            {engineMode === 'DATA_DRIVEN_HYBRID' && (
+              <span className="text-[11px] text-slate-400">
+                Starts from the 90-day moving average of daily logs instead of the declared baseline, when
+                there's enough history — falls back to theoretical otherwise.
+              </span>
+            )}
+          </label>
         </div>
 
         <button
@@ -417,7 +430,7 @@ export default function SimulationPage() {
       {/* RIGHT: results & visuals */}
       <section className="flex flex-col gap-6 lg:col-span-2">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 xl:grid-cols-5">
-          <KpiCard icon={<IndianRupee className="h-5 w-5 text-emerald-600" />} label="10-Year NPV Cost" value={series.length ? formatCrores(totalCostInr) : '—'} />
+          <KpiCard icon={<IndianRupee className="h-5 w-5 text-emerald-600" />} label="20-Year NPV Cost" value={series.length ? formatCrores(totalCostInr) : '—'} />
           <KpiCard icon={<Table2 className="h-5 w-5 text-sky-600" />} label="OPEX / CAPEX" value={series.length ? `${formatCrores(opexInr)} / ${formatCrores(capexInr)}` : '—'} />
           <KpiCard icon={<TrendingUp className="h-5 w-5 text-sky-600" />} label="Avg Coverage" value={series.length ? `${avgCoveragePct.toFixed(1)}%` : '—'} />
           <KpiCard icon={<Recycle className="h-5 w-5 text-amber-600" />} label="Landfill Diversion" value={series.length ? `${diversionRatePct.toFixed(1)}%` : '—'} />
@@ -425,7 +438,7 @@ export default function SimulationPage() {
         </div>
 
         <div className="flex items-center gap-1 rounded-lg bg-slate-100 p-1 self-start">
-          {(['trajectory', 'budget', 'findings'] as const).map((t) => (
+          {(['trajectory', 'analytics', 'budget', 'findings'] as const).map((t) => (
             <button
               key={t}
               type="button"
@@ -434,12 +447,21 @@ export default function SimulationPage() {
                 tab === t ? 'bg-white text-slate-900 shadow-sm' : 'text-slate-500 hover:text-slate-700'
               }`}
             >
-              {t === 'trajectory' ? 'Trajectory Graphs' : t === 'budget' ? 'Line-Item Budget' : 'Findings & Alerts'}
+              {t === 'trajectory'
+                ? 'Trajectory Graphs'
+                : t === 'analytics'
+                  ? '20-Year Analytics'
+                  : t === 'budget'
+                    ? 'Line-Item Budget'
+                    : 'Findings & Alerts'}
             </button>
           ))}
         </div>
 
         {tab === 'trajectory' && <TrajectoryTab series={series} isLoading={resultsQuery.isLoading && !!activeRunId && isRunCompleted} />}
+        {tab === 'analytics' && (
+          <AnalyticsTab runId={isRunCompleted ? activeRunId : null} series={series} annualBudgetInr={annualBudgetInr} />
+        )}
         {tab === 'budget' && <BudgetTab runId={isRunCompleted ? activeRunId : null} />}
         {tab === 'findings' && <FindingsTab runId={isRunCompleted ? activeRunId : null} />}
       </section>
