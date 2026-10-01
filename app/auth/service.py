@@ -4,8 +4,8 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.models import RefreshToken, User, UserRole
-from app.auth.schemas import RegisterIn
+from app.auth.models import RefreshToken, RoleUpgradeRequest, RoleUpgradeStatus, User, UserRole
+from app.auth.schemas import ApplyResearcherIn, RegisterIn
 from app.core.errors import AppError
 from app.core.security import (
     create_access_token,
@@ -25,7 +25,8 @@ async def register_user(db: AsyncSession, payload: RegisterIn) -> User:
         email=payload.email,
         hashed_password=hash_password(payload.password),
         full_name=payload.full_name,
-        role=UserRole.RESEARCHER,  # forced regardless of what the client sent
+        role=UserRole.VIEWER,  # forced — RegisterIn has no `role` field to override this with
+        is_active=True,
     )
     db.add(user)
     await db.flush()
@@ -72,3 +73,109 @@ async def rotate_refresh_token(db: AsyncSession, refresh_token: str) -> tuple[st
 
     stored.revoked_at = datetime.now(timezone.utc)
     return await issue_tokens(db, user)
+
+
+async def apply_for_researcher(db: AsyncSession, user: User, payload: ApplyResearcherIn) -> RoleUpgradeRequest:
+    if user.role != UserRole.VIEWER:
+        raise AppError(
+            "NOT_A_VIEWER", "Only a VIEWER account can apply for the RESEARCHER role", 409
+        )
+
+    existing_pending = await db.scalar(
+        select(RoleUpgradeRequest).where(
+            RoleUpgradeRequest.user_id == user.id, RoleUpgradeRequest.status == RoleUpgradeStatus.PENDING
+        )
+    )
+    if existing_pending is not None:
+        raise AppError(
+            "APPLICATION_ALREADY_PENDING", "You already have a pending RESEARCHER application", 409
+        )
+
+    request = RoleUpgradeRequest(
+        user_id=user.id,
+        target_role=UserRole.RESEARCHER,
+        reason=payload.reason,
+        institution_or_department=payload.institution_or_department,
+    )
+    db.add(request)
+    await db.flush()
+    return request
+
+
+async def get_latest_application(db: AsyncSession, user: User) -> RoleUpgradeRequest | None:
+    return await db.scalar(
+        select(RoleUpgradeRequest)
+        .where(RoleUpgradeRequest.user_id == user.id)
+        .order_by(RoleUpgradeRequest.created_at.desc())
+        .limit(1)
+    )
+
+
+async def list_upgrade_requests(
+    db: AsyncSession, status_filter: RoleUpgradeStatus | None
+) -> list[tuple[RoleUpgradeRequest, User]]:
+    stmt = select(RoleUpgradeRequest, User).join(User, User.id == RoleUpgradeRequest.user_id)
+    if status_filter is not None:
+        stmt = stmt.where(RoleUpgradeRequest.status == status_filter)
+    stmt = stmt.order_by(RoleUpgradeRequest.created_at.desc())
+    return list((await db.execute(stmt)).all())
+
+
+async def get_upgrade_request_or_404(db: AsyncSession, request_id: uuid.UUID) -> RoleUpgradeRequest:
+    request = await db.get(RoleUpgradeRequest, request_id)
+    if request is None:
+        raise AppError("UPGRADE_REQUEST_NOT_FOUND", "Role upgrade request not found", 404)
+    return request
+
+
+async def review_upgrade_request(
+    db: AsyncSession,
+    request: RoleUpgradeRequest,
+    reviewer: User,
+    action: str,
+    review_notes: str | None,
+) -> RoleUpgradeRequest:
+    if request.status != RoleUpgradeStatus.PENDING:
+        raise AppError(
+            "UPGRADE_REQUEST_ALREADY_REVIEWED", f"This application is already {request.status.value}", 409
+        )
+
+    applicant = await db.get(User, request.user_id)
+    if applicant is None:
+        raise AppError("USER_NOT_FOUND", "The applicant's account no longer exists", 404)
+
+    request.review_notes = review_notes
+    request.reviewed_by = reviewer.id
+    request.reviewed_at = datetime.now(timezone.utc)
+
+    if action == "APPROVE":
+        request.status = RoleUpgradeStatus.APPROVED
+        applicant.role = request.target_role
+    else:
+        request.status = RoleUpgradeStatus.REJECTED
+
+    await db.flush()
+    return request
+
+
+async def list_all_users(db: AsyncSession) -> list[User]:
+    stmt = select(User).where(User.deleted_at.is_(None)).order_by(User.created_at.desc())
+    return list(await db.scalars(stmt))
+
+
+async def get_user_or_404(db: AsyncSession, user_id: uuid.UUID) -> User:
+    user = await db.get(User, user_id)
+    if user is None or user.deleted_at is not None:
+        raise AppError("USER_NOT_FOUND", "User not found", 404)
+    return user
+
+
+async def assign_role(db: AsyncSession, user: User, role: UserRole) -> User:
+    """Direct admin override, no application/approval needed — separate
+    from the VIEWER->RESEARCHER moderated workflow above. Leaves any
+    pending role_upgrade_requests row for this user untouched (still
+    PENDING); an admin reviewing it afterward just approves/rejects
+    against whatever the user's role already is by then."""
+    user.role = role
+    await db.flush()
+    return user

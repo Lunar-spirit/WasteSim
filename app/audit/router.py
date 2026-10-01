@@ -16,7 +16,14 @@ router = APIRouter(tags=["audit"])
 @router.get("/api/v1/habitations/{habitation_id}/audit-logs")
 async def get_habitation_audit_logs(
     habitation_id: uuid.UUID,
-    current_user: User = Depends(require_role(UserRole.ADMIN, UserRole.POLICY_VIEWER)),
+    # Was ADMIN + the old invite-only POLICY_VIEWER role. That role is now
+    # VIEWER (migration 0015) — but VIEWER is also the default every
+    # self-registered account starts on, so keeping it here would hand
+    # audit-log read access (who did what, action details) to the general
+    # public by default. Audit trails fall under this feature's own
+    # "Operational details" sensitivity bucket, so this narrows to
+    # ADMIN-only rather than inheriting the rename.
+    current_user: User = Depends(require_role(UserRole.ADMIN)),
     db: AsyncSession = Depends(get_db),
 ):
     await get_habitation_or_404(db, habitation_id)

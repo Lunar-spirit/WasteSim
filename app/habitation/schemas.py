@@ -2,9 +2,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, EmailStr, Field
 
-from app.habitation.models import HabitationStatus, HabitationType
+from app.habitation.models import AccessLevel, HabitationStatus, HabitationType
 
 
 class HabitationCreate(BaseModel):
@@ -38,3 +38,26 @@ class HabitationOut(BaseModel):
 
 class HabitationDetailOut(HabitationOut):
     active_parameter_set_summary: dict[str, Any] | None = None
+
+
+class HabitationMemberOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    habitation_id: uuid.UUID
+    user_id: uuid.UUID
+    access_level: AccessLevel
+    created_at: datetime
+
+
+class HabitationMemberAdminOut(HabitationMemberOut):
+    """Same shape a member row has, plus who the user actually is — this
+    is the ADMIN-facing listing; nothing else in the app lists members."""
+
+    user_email: str
+    user_full_name: str
+
+
+class GrantAccessIn(BaseModel):
+    email: EmailStr
+    access_level: AccessLevel

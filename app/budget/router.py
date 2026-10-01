@@ -4,11 +4,12 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.models import User
+from app.auth.models import User, UserRole
 from app.budget import service
 from app.budget.models import BudgetLine
 from app.core.db import get_db
 from app.core.deps import get_current_user
+from app.core.errors import AppError
 from app.habitation.service import ensure_read_access, get_habitation_or_404
 from app.simulation.service import get_run_or_404
 
@@ -27,6 +28,12 @@ async def get_budget_lines(
     run_id: uuid.UUID, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     await _ensure_run_access(db, run_id, current_user)
+    # The line-item table is the "detailed unit costs / OPEX-CAPEX breakdown"
+    # the sensitivity boundary restricts to RESEARCHER+ — unlike the fields
+    # masked elsewhere, there's no non-sensitive residue of a cost line to
+    # return, so this is a flat 403 rather than an empty-but-200 list.
+    if current_user.role == UserRole.VIEWER:
+        raise AppError("FORBIDDEN_ROLE", "Researcher access or higher is required to view cost line items", 403)
     rows = list(await db.scalars(select(BudgetLine).where(BudgetLine.run_id == run_id).order_by(BudgetLine.year_index)))
     return {
         "success": True,
@@ -50,14 +57,18 @@ async def get_budget_summary(
 ):
     await _ensure_run_access(db, run_id, current_user)
     summary = await service.get_budget_summary(db, run_id)
+    masked = current_user.role == UserRole.VIEWER
     return {
         "success": True,
         "data": {
             "run_id": summary["run_id"],
-            "total_opex_inr": summary["total_opex_inr"],
-            "total_capex_inr": summary["total_capex_inr"],
-            "total_cost_inr": summary["total_cost_inr"],
-            "npv_total_cost_inr": summary["npv_total_cost_inr"],
-            "by_category": summary["by_category"],
+            # Cost figures — Economics/Labor sensitivity bucket — are nulled
+            # for VIEWER rather than omitted, so the response shape stays
+            # identical for every role (design's "strip or set to null").
+            "total_opex_inr": None if masked else summary["total_opex_inr"],
+            "total_capex_inr": None if masked else summary["total_capex_inr"],
+            "total_cost_inr": None if masked else summary["total_cost_inr"],
+            "npv_total_cost_inr": None if masked else summary["npv_total_cost_inr"],
+            "by_category": None if masked else summary["by_category"],
         },
     }

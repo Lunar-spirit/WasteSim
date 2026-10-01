@@ -9,7 +9,7 @@ from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
 from app.audit.router import router as audit_router
-from app.auth.router import router as auth_router
+from app.auth.router import admin_router, router as auth_router
 from app.automation.router import router as automation_router
 from app.budget.router import router as budget_router
 from app.chat.router import router as chat_router
@@ -69,6 +69,7 @@ app.add_middleware(
 register_exception_handlers(app)
 
 app.include_router(auth_router)
+app.include_router(admin_router)
 app.include_router(habitation_router)
 app.include_router(parameters_router)
 app.include_router(validation_router)

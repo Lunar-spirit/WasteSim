@@ -4,6 +4,7 @@ import {
   Download,
   IndianRupee,
   Loader2,
+  Lock,
   Play,
   Recycle,
   Sparkles,
@@ -34,6 +35,7 @@ import {
   fetchSimulationRun,
 } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
+import { useCurrentUser } from '../hooks/useCurrentUser'
 import { setDraftPsid } from '../lib/history'
 import type { BudgetLine, ReportStatus, RunStatus, SimulationYearly } from '../types/api'
 
@@ -129,13 +131,28 @@ function TrajectoryTab({ series, isLoading }: { series: SimulationYearly[]; isLo
 }
 
 function BudgetTab({ runId }: { runId: string | null }) {
+  const { isViewer } = useCurrentUser()
+
   const budgetQuery = useQuery({
     queryKey: ['budget-lines', runId],
     queryFn: () => fetchBudgetLines(runId as string),
-    enabled: !!runId,
+    enabled: !!runId && !isViewer,
   })
 
   const [expandedYear, setExpandedYear] = useState<number | null>(null)
+
+  if (isViewer) {
+    return (
+      <div className="flex flex-col items-center gap-2 rounded-xl border border-slate-200 bg-white p-10 text-center">
+        <Lock className="h-5 w-5 text-slate-400" />
+        <p className="text-sm font-medium text-slate-600">🔒 Researcher Access Required</p>
+        <p className="max-w-sm text-xs text-slate-400">
+          The line-item budget sheet is restricted to Researcher accounts and above. Apply for Researcher access
+          from the top navbar to view it.
+        </p>
+      </div>
+    )
+  }
 
   if (!runId) return <div className="rounded-xl border border-slate-200 bg-white p-8 text-center text-sm text-slate-400">Run a simulation first.</div>
   if (budgetQuery.isLoading) return <div className="flex justify-center p-8"><Loader2 className="h-5 w-5 animate-spin text-slate-400" /></div>

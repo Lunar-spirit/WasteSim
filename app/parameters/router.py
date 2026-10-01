@@ -4,17 +4,37 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.auth.models import User
+from app.auth.models import User, UserRole
 from app.core.db import get_db
 from app.core.deps import check_habitation_access, get_current_user
+from app.core.errors import AppError
 from app.habitation.models import AccessLevel
 from app.parameters import service
+from app.parameters.models import ParameterSetStatus
 from app.parameters.schemas import (
     ParameterSetCreate,
     ParameterSetDetailOut,
     ParameterSetOut,
     WasteBaselineIn,
 )
+
+# Economic/labor fields the VIEWER role must never see (design's own
+# sensitivity boundary — budgets and household income are not "public"
+# data). Keyed by category, mirroring how `categories` is itself a
+# category-name -> field-dict structure.
+_SENSITIVE_PARAMETER_FIELDS: dict[str, tuple[str, ...]] = {
+    "economic_conditions": ("swm_annual_budget", "avg_household_income_monthly"),
+}
+
+
+def _mask_sensitive_categories(categories: dict[str, dict]) -> dict[str, dict]:
+    for category, fields in _SENSITIVE_PARAMETER_FIELDS.items():
+        if category not in categories:
+            continue
+        for field in fields:
+            if field in categories[category]:
+                categories[category][field] = None
+    return categories
 
 router = APIRouter(prefix="/api/v1", tags=["parameters"])
 
@@ -77,10 +97,18 @@ async def get_parameter_set(
 ):
     ps = await service.get_parameter_set_or_404(db, psid)
     await check_habitation_access(db, current_user, ps.habitation_id, AccessLevel.VIEWER)
+
+    if current_user.role == UserRole.VIEWER and ps.status == ParameterSetStatus.DRAFT:
+        raise AppError(
+            "FORBIDDEN_ROLE", "Draft (uncommitted) parameter sets require Researcher access or higher", 403
+        )
+
     full = await service.get_parameter_set_full(db, psid)
     out = ParameterSetDetailOut.model_validate(
         full["parameter_set"], from_attributes=True
     )
     out.categories = full["categories"]
     out.waste_baseline = full["waste_baseline"]
+    if current_user.role == UserRole.VIEWER:
+        out.categories = _mask_sensitive_categories(out.categories)
     return {"success": True, "data": out}

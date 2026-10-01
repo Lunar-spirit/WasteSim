@@ -117,3 +117,51 @@ async def ensure_read_access(db: AsyncSession, user: User, habitation: Habitatio
     matrix); a DRAFT/ARCHIVED one needs at least VIEWER membership."""
     if habitation.status != HabitationStatus.READY:
         await check_habitation_access(db, user, habitation.id, AccessLevel.VIEWER)
+
+
+async def list_members(db: AsyncSession, habitation_id: uuid.UUID) -> list[tuple[HabitationMember, User]]:
+    stmt = (
+        select(HabitationMember, User)
+        .join(User, User.id == HabitationMember.user_id)
+        .where(HabitationMember.habitation_id == habitation_id)
+        .order_by(HabitationMember.created_at)
+    )
+    return list((await db.execute(stmt)).all())
+
+
+async def grant_access(
+    db: AsyncSession, habitation_id: uuid.UUID, email: str, access_level: AccessLevel
+) -> HabitationMember:
+    """Upsert by (habitation_id, user_id) — granting access a second time at
+    a different level just changes the existing row's level rather than
+    colliding with uq_habitation_member."""
+    user = await db.scalar(select(User).where(User.email == email, User.deleted_at.is_(None)))
+    if user is None:
+        raise AppError("USER_NOT_FOUND", f"No active user with email {email}", 404)
+
+    existing = await db.scalar(
+        select(HabitationMember).where(
+            HabitationMember.habitation_id == habitation_id, HabitationMember.user_id == user.id
+        )
+    )
+    if existing is not None:
+        existing.access_level = access_level
+        await db.flush()
+        return existing
+
+    member = HabitationMember(habitation_id=habitation_id, user_id=user.id, access_level=access_level)
+    db.add(member)
+    await db.flush()
+    return member
+
+
+async def get_member_or_404(db: AsyncSession, habitation_id: uuid.UUID, member_id: uuid.UUID) -> HabitationMember:
+    member = await db.get(HabitationMember, member_id)
+    if member is None or member.habitation_id != habitation_id:
+        raise AppError("MEMBER_NOT_FOUND", "Habitation member not found", 404)
+    return member
+
+
+async def revoke_access(db: AsyncSession, member: HabitationMember) -> None:
+    await db.delete(member)
+    await db.flush()

@@ -32,6 +32,47 @@ export interface TokenResponse {
   expires_in: number
 }
 
+export type UserRole = 'ADMIN' | 'PLANNER' | 'RESEARCHER' | 'VIEWER'
+
+export interface CurrentUser {
+  id: string
+  email: string
+  full_name: string
+  role: UserRole
+  is_active: boolean
+  created_at: string
+}
+
+export type RoleUpgradeRequestStatus = 'PENDING' | 'APPROVED' | 'REJECTED'
+
+export interface RoleUpgradeRequest {
+  id: string
+  user_id: string
+  target_role: UserRole
+  reason: string
+  institution_or_department: string | null
+  status: RoleUpgradeRequestStatus
+  review_notes: string | null
+  reviewed_by: string | null
+  reviewed_at: string | null
+  created_at: string
+}
+
+export interface RoleUpgradeRequestAdmin extends RoleUpgradeRequest {
+  applicant_email: string
+  applicant_full_name: string
+}
+
+export interface ApplyResearcherPayload {
+  reason: string
+  institution_or_department?: string
+}
+
+export interface ReviewUpgradeRequestPayload {
+  action: 'APPROVE' | 'REJECT'
+  review_notes?: string
+}
+
 // --- Habitations -------------------------------------------------------------
 
 export type HabitationStatus = 'DRAFT' | 'READY' | 'ARCHIVED'
@@ -60,6 +101,23 @@ export interface HabitationCreatePayload {
   centroid_geojson?: Record<string, unknown> | null
   boundary_geojson?: Record<string, unknown> | null
   area_sqkm?: number | null
+}
+
+export type AccessLevel = 'OWNER' | 'EDITOR' | 'VIEWER'
+
+export interface HabitationMember {
+  id: string
+  habitation_id: string
+  user_id: string
+  access_level: AccessLevel
+  created_at: string
+  user_email: string
+  user_full_name: string
+}
+
+export interface GrantAccessPayload {
+  email: string
+  access_level: AccessLevel
 }
 
 // --- Simulation runs ---------------------------------------------------------
@@ -333,11 +391,14 @@ export interface BudgetLine {
 
 export interface BudgetSummary {
   run_id: string
-  total_opex_inr: number
-  total_capex_inr: number
-  total_cost_inr: number
-  npv_total_cost_inr: number
-  by_category: Record<string, number>
+  // null for the VIEWER role — the backend masks these Economics/Labor
+  // fields rather than omitting them, so the shape stays the same for
+  // every role (app/budget/router.py's get_budget_summary).
+  total_opex_inr: number | null
+  total_capex_inr: number | null
+  total_cost_inr: number | null
+  npv_total_cost_inr: number | null
+  by_category: Record<string, number> | null
 }
 
 // --- Scenario --------------------------------------------------------------

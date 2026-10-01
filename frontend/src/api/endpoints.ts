@@ -1,6 +1,7 @@
 import { apiClient, unwrap } from './client'
 import type {
   ApiEnvelope,
+  ApplyResearcherPayload,
   BudgetLine,
   BudgetSummary,
   ChatMessage,
@@ -9,11 +10,14 @@ import type {
   Comparison,
   ComparisonDeltas,
   ComparisonSeries,
+  CurrentUser,
   EventCatalogueItem,
   EventIn,
   GISLayer,
+  GrantAccessPayload,
   Habitation,
   HabitationCreatePayload,
+  HabitationMember,
   ImpactPreview,
   MapOverlay,
   OptimizationCandidate,
@@ -25,6 +29,10 @@ import type {
   ParameterSetDetail,
   ReportDownload,
   ReportResponse,
+  ReviewUpgradeRequestPayload,
+  RoleUpgradeRequest,
+  RoleUpgradeRequestAdmin,
+  RoleUpgradeRequestStatus,
   RunFinding,
   ScenarioEvent,
   SensitivityAnalysis,
@@ -34,6 +42,53 @@ import type {
   TornadoRow,
   ValidationReport,
 } from '../types/api'
+
+// --- Auth / role upgrade workflow -------------------------------------------
+
+export async function fetchCurrentUser(): Promise<CurrentUser> {
+  const { data } = await apiClient.get<ApiEnvelope<CurrentUser>>('/api/v1/auth/me')
+  return unwrap(data)
+}
+
+export async function applyForResearcher(payload: ApplyResearcherPayload): Promise<RoleUpgradeRequest> {
+  const { data } = await apiClient.post<ApiEnvelope<RoleUpgradeRequest>>('/api/v1/auth/apply-researcher', payload)
+  return unwrap(data)
+}
+
+export async function fetchMyApplicationStatus(): Promise<RoleUpgradeRequest | null> {
+  const { data } = await apiClient.get<ApiEnvelope<RoleUpgradeRequest | null>>('/api/v1/auth/my-application-status')
+  return unwrap(data)
+}
+
+export async function fetchUpgradeRequests(status?: RoleUpgradeRequestStatus): Promise<RoleUpgradeRequestAdmin[]> {
+  const { data } = await apiClient.get<ApiEnvelope<RoleUpgradeRequestAdmin[]>>('/api/v1/admin/upgrade-requests', {
+    params: status ? { status } : undefined,
+  })
+  return unwrap(data)
+}
+
+export async function reviewUpgradeRequest(
+  requestId: string,
+  payload: ReviewUpgradeRequestPayload,
+): Promise<RoleUpgradeRequest> {
+  const { data } = await apiClient.post<ApiEnvelope<RoleUpgradeRequest>>(
+    `/api/v1/admin/upgrade-requests/${requestId}/review`,
+    payload,
+  )
+  return unwrap(data)
+}
+
+export async function fetchAllUsers(): Promise<CurrentUser[]> {
+  const { data } = await apiClient.get<ApiEnvelope<CurrentUser[]>>('/api/v1/admin/users')
+  return unwrap(data)
+}
+
+/** Direct admin override — sets any user to any role immediately, no
+ * application or approval needed (app/auth/router.py's assign_role). */
+export async function assignUserRole(userId: string, role: CurrentUser['role']): Promise<CurrentUser> {
+  const { data } = await apiClient.patch<ApiEnvelope<CurrentUser>>(`/api/v1/admin/users/${userId}/role`, { role })
+  return unwrap(data)
+}
 
 export async function fetchHabitations(): Promise<Habitation[]> {
   const { data } = await apiClient.get<ApiEnvelope<Habitation[]>>('/api/v1/habitations')
@@ -48,6 +103,30 @@ export async function fetchHabitation(habitationId: string): Promise<Habitation>
 export async function createHabitation(payload: HabitationCreatePayload): Promise<Habitation> {
   const { data } = await apiClient.post<ApiEnvelope<Habitation>>('/api/v1/habitations', payload)
   return unwrap(data)
+}
+
+// --- Habitation access control (ADMIN only) ---------------------------------
+
+export async function fetchHabitationMembers(habitationId: string): Promise<HabitationMember[]> {
+  const { data } = await apiClient.get<ApiEnvelope<HabitationMember[]>>(
+    `/api/v1/habitations/${habitationId}/members`,
+  )
+  return unwrap(data)
+}
+
+export async function grantHabitationAccess(
+  habitationId: string,
+  payload: GrantAccessPayload,
+): Promise<HabitationMember> {
+  const { data } = await apiClient.post<ApiEnvelope<HabitationMember>>(
+    `/api/v1/habitations/${habitationId}/members`,
+    payload,
+  )
+  return unwrap(data)
+}
+
+export async function revokeHabitationAccess(habitationId: string, memberId: string): Promise<void> {
+  await apiClient.delete(`/api/v1/habitations/${habitationId}/members/${memberId}`)
 }
 
 // --- Simulation --------------------------------------------------------------

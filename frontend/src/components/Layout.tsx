@@ -5,18 +5,22 @@ import {
   FileText,
   GitCompare,
   LayoutDashboard,
+  Lock,
   LogOut,
   Map as MapIcon,
   Plus,
+  ShieldCheck,
   SlidersHorizontal,
   Sparkles,
   Target,
 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
-import { fetchHabitations } from '../api/endpoints'
+import { fetchHabitations, fetchMyApplicationStatus } from '../api/endpoints'
 import { logout } from '../api/client'
 import { useAppContext } from '../context/AppContext'
+import { useCurrentUser } from '../hooks/useCurrentUser'
+import ApplyResearcherModal from './ApplyResearcherModal'
 import ChatDrawer from './ChatDrawer'
 import CreateHabitationModal from './CreateHabitationModal'
 
@@ -31,9 +35,51 @@ const NAV_ITEMS = [
   { to: '/reports', label: 'Reports', icon: FileText },
 ]
 
+const ADMIN_NAV_ITEM = { to: '/admin/upgrade-requests', label: 'Upgrade Requests', icon: ShieldCheck }
+
+/** Badge + apply flow shown only for the VIEWER role — everyone else (an
+ * approved RESEARCHER included) never sees this. */
+function ViewerRoleStatus() {
+  const [showApplyModal, setShowApplyModal] = useState(false)
+
+  const statusQuery = useQuery({
+    queryKey: ['myApplicationStatus'],
+    queryFn: fetchMyApplicationStatus,
+  })
+  const application = statusQuery.data
+
+  return (
+    <>
+      <span
+        title="Self-registered accounts start as Viewer: public, read-only access to non-sensitive data."
+        className="flex items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs font-medium text-slate-600"
+      >
+        <Lock className="h-3.5 w-3.5" />
+        Role: Viewer (Public Access)
+      </span>
+      {application?.status === 'PENDING' ? (
+        <span className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-medium text-amber-700">
+          Application submitted (Pending Admin Review)
+        </span>
+      ) : (
+        <button
+          type="button"
+          onClick={() => setShowApplyModal(true)}
+          className="rounded-lg border border-emerald-300 bg-white px-3 py-2 text-xs font-medium text-emerald-700 transition hover:bg-emerald-50"
+        >
+          {application?.status === 'REJECTED' ? 'Re-apply for Researcher Role' : 'Apply for Researcher Role'}
+        </button>
+      )}
+      {showApplyModal && <ApplyResearcherModal onClose={() => setShowApplyModal(false)} />}
+    </>
+  )
+}
+
 function Header() {
   const { currentHabitationId, setCurrentHabitationId, setActiveRunId, setIsCopilotOpen } = useAppContext()
   const [isCreateOpen, setIsCreateOpen] = useState(false)
+  const { isAdmin, isViewer } = useCurrentUser()
+  const navItems = isAdmin ? [...NAV_ITEMS, ADMIN_NAV_ITEM] : NAV_ITEMS
 
   const habitationsQuery = useQuery({
     queryKey: ['habitations'],
@@ -81,6 +127,7 @@ function Header() {
         </div>
 
         <div className="flex items-center gap-2">
+          {isViewer && <ViewerRoleStatus />}
           <button
             type="button"
             onClick={() => setIsCopilotOpen(true)}
@@ -102,7 +149,7 @@ function Header() {
       </div>
 
       <nav className="flex items-center gap-1 overflow-x-auto px-6 pb-2">
-        {NAV_ITEMS.map(({ to, label, icon: Icon }) => (
+        {navItems.map(({ to, label, icon: Icon }) => (
           <NavLink
             key={to}
             to={to}

@@ -4,9 +4,10 @@ from fastapi import APIRouter, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.audit.service import write_audit_log
-from app.auth.models import User
+from app.auth.models import User, UserRole
 from app.core.db import get_db
 from app.core.deps import get_current_user
+from app.core.errors import AppError
 from app.habitation.service import ensure_read_access, get_habitation_or_404
 from app.scenario import service
 from app.scenario.schemas import ImpactPreviewIn, ScenarioCreateIn, ScenarioEventOut
@@ -37,6 +38,15 @@ async def create_scenario(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    # _get_run_with_access only checks READ access (design: viewing a run's
+    # existing scenarios is open the same way viewing the run itself is) —
+    # creating a new one is a write action VIEWER accounts don't get, same
+    # boundary as parameter editing/GIS layer editing (those are already
+    # naturally blocked by needing EDITOR habitation membership a fresh
+    # VIEWER never has; scenario creation has no such membership gate, so
+    # it needs this explicit role check instead).
+    if current_user.role == UserRole.VIEWER:
+        raise AppError("FORBIDDEN_ROLE", "Researcher access or higher is required to create scenario runs", 403)
     await _get_run_with_access(db, run_id, current_user)
     scenario_run = await service.create_scenario_run(db, run_id, payload, current_user)
     await write_audit_log(

@@ -167,6 +167,11 @@ async def admin_user(db_session):
     return await _make_user(db_session, UserRole.ADMIN)
 
 
+@pytest_asyncio.fixture
+async def viewer_user(db_session):
+    return await _make_user(db_session, UserRole.VIEWER)
+
+
 async def _login(client, email: str, password: str) -> str:
     resp = await client.post("/api/v1/auth/login", json={"email": email, "password": password})
     assert resp.status_code == 200, resp.text
@@ -190,5 +195,12 @@ async def researcher_headers(client, researcher_user):
 @pytest_asyncio.fixture
 async def admin_headers(client, admin_user):
     user, password = admin_user
+    token = await _login(client, user.email, password)
+    return {"Authorization": f"Bearer {token}"}
+
+
+@pytest_asyncio.fixture
+async def viewer_headers(client, viewer_user):
+    user, password = viewer_user
     token = await _login(client, user.email, password)
     return {"Authorization": f"Bearer {token}"}

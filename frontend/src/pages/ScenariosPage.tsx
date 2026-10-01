@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { CloudRain, Loader2, Play, Waves, Zap } from 'lucide-react'
+import { CloudRain, Loader2, Lock, Play, Waves, Zap } from 'lucide-react'
 import { useState } from 'react'
 import {
   createScenario,
@@ -10,6 +10,7 @@ import {
   previewEventImpact,
 } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
+import { useCurrentUser } from '../hooks/useCurrentUser'
 import type { EventType } from '../types/api'
 
 const EVENT_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
@@ -26,6 +27,7 @@ function severityFromIntensity(pct: number): 'MILD' | 'MODERATE' | 'SEVERE' {
 
 export default function ScenariosPage() {
   const { currentHabitationId, activeRunId, setActiveRunId } = useAppContext()
+  const { isViewer } = useCurrentUser()
 
   const runsQuery = useQuery({
     queryKey: ['simulations', currentHabitationId],
@@ -187,15 +189,27 @@ export default function ScenariosPage() {
               {previewMutation.isPending && <Loader2 className="h-4 w-4 animate-spin" />}
               Preview Impact
             </button>
-            <button
-              type="button"
-              onClick={() => createMutation.mutate()}
-              disabled={!effectiveBaseRunId || createMutation.isPending}
-              className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
-            >
-              {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
-              Run Full Scenario
-            </button>
+            {isViewer ? (
+              <button
+                type="button"
+                disabled
+                title="Apply for Researcher access from the top navbar to run scenarios"
+                className="flex flex-1 cursor-not-allowed items-center justify-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-medium text-slate-400"
+              >
+                <Lock className="h-4 w-4" />
+                🔒 Researcher Access Required
+              </button>
+            ) : (
+              <button
+                type="button"
+                onClick={() => createMutation.mutate()}
+                disabled={!effectiveBaseRunId || createMutation.isPending}
+                className="flex flex-1 items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+              >
+                {createMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}
+                Run Full Scenario
+              </button>
+            )}
           </div>
           {createMutation.isSuccess && (
             <p className="text-xs text-emerald-600">
