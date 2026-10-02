@@ -7,6 +7,7 @@ import { AppProvider } from './context/AppContext'
 import { useCurrentUser } from './hooks/useCurrentUser'
 import AdminUpgradeRequestsPage from './pages/AdminUpgradeRequestsPage'
 import ComparisonPage from './pages/ComparisonPage'
+import DailyLogsPage from './pages/DailyLogsPage'
 import GisStudioPage from './pages/GisStudioPage'
 import OptimizationPage from './pages/OptimizationPage'
 import ParametersPage from './pages/ParametersPage'
@@ -164,6 +165,7 @@ export default function App() {
           <Route element={<Layout />}>
             <Route index element={<Navigate to="/simulation" replace />} />
             <Route path="/gis" element={<GisStudioPage />} />
+            <Route path="/daily-logs" element={<DailyLogsPage />} />
             <Route path="/parameters" element={<ParametersPage />} />
             <Route path="/simulation" element={<SimulationPage />} />
             <Route path="/scenarios" element={<ScenariosPage />} />

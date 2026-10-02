@@ -4,25 +4,13 @@ import { Loader2, MapPinOff, Mountain, Route, Sparkles } from 'lucide-react'
 // export (`import maplibregl from 'maplibre-gl'` fails at runtime with
 // "does not provide an export named 'default'", found live while first
 // building this workspace).
-import { Map as MaplibreMap, NavigationControl, type StyleSpecification } from 'maplibre-gl'
+import { Map as MaplibreMap, NavigationControl, Popup } from 'maplibre-gl'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { autoPopulateHabitation, fetchHabitation, fetchLayers, fetchMapOverlay, fetchParameterSet } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
 import { setDraftPsid } from '../lib/history'
+import { attachBasemapFallback, PRIMARY_STYLE_URL } from '../lib/mapStyle'
 import type { LayerType, MapOverlay } from '../types/api'
-
-const BASE_STYLE: StyleSpecification = {
-  version: 8,
-  sources: {
-    'osm-raster': {
-      type: 'raster',
-      tiles: ['https://tile.openstreetmap.org/{z}/{x}/{y}.png'],
-      tileSize: 256,
-      attribution: '© OpenStreetMap contributors',
-    },
-  },
-  layers: [{ id: 'osm-raster-layer', type: 'raster', source: 'osm-raster' }],
-}
 
 const BOUNDARY_SOURCE_ID = 'habitation-boundary'
 const LAYER_SOURCE_PREFIX = 'gis-layer-'
@@ -72,14 +60,67 @@ function addFeatureCollectionLayers(
     type: 'line',
     source: sourceId,
     filter: ['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'LineString']],
-    paint: { 'line-color': colour, 'line-width': 2 },
+    // A plain 2px line nearly disappears against CARTO Positron's pale
+    // basemap — a thin white halo underneath the colour keeps every layer
+    // (boundary, roads, ...) readable regardless of what's beneath it.
+    paint: { 'line-color': colour, 'line-width': 2.5, 'line-gap-width': 0 },
   })
+  map.addLayer(
+    {
+      id: `${sourceId}-line-halo`,
+      type: 'line',
+      source: sourceId,
+      filter: ['any', ['==', ['geometry-type'], 'Polygon'], ['==', ['geometry-type'], 'LineString']],
+      paint: { 'line-color': '#ffffff', 'line-width': 4.5, 'line-opacity': 0.6 },
+    },
+    `${sourceId}-line`,
+  )
   map.addLayer({
     id: `${sourceId}-point`,
     type: 'circle',
     source: sourceId,
     filter: ['==', ['geometry-type'], 'Point'],
     paint: { 'circle-radius': 6, 'circle-color': colour, 'circle-stroke-width': 1.5, 'circle-stroke-color': '#ffffff' },
+  })
+}
+
+const HOVER_PROPERTY_LABELS: { keys: string[]; label: string; format?: (v: unknown) => string }[] = [
+  { keys: ['name', 'road_name', 'segment_name'], label: 'Name' },
+  { keys: ['road_type', 'type', 'category'], label: 'Type' },
+  { keys: ['length_m'], label: 'Length', format: (v) => `${(Number(v) / 1000).toFixed(2)} km` },
+]
+
+/** One popup, reused for every feature layer this page draws — attached
+ * once in the map-init effect rather than per addFeatureCollectionLayers()
+ * call, since layers/sources get torn down and recreated on every
+ * renderOverlay() (layer-scoped `map.on(event, layerId, ...)` handlers
+ * would otherwise pile up against ids that no longer exist). */
+function attachFeatureHoverTooltips(map: MaplibreMap) {
+  const popup = new Popup({ closeButton: false, closeOnClick: false, maxWidth: '260px' })
+
+  map.on('mousemove', (e) => {
+    const features = map.queryRenderedFeatures(e.point).filter((f) => {
+      const id = f.layer.id
+      return (id.startsWith(LAYER_SOURCE_PREFIX) || id.startsWith(BOUNDARY_SOURCE_ID)) && !id.endsWith('-line-halo')
+    })
+    const feature = features[0]
+    if (!feature) {
+      popup.remove()
+      map.getCanvas().style.cursor = ''
+      return
+    }
+    map.getCanvas().style.cursor = 'pointer'
+    const rows = HOVER_PROPERTY_LABELS.map(({ keys, label, format }) => {
+      const key = keys.find((k) => feature.properties?.[k] != null)
+      if (!key) return null
+      const raw = feature.properties![key]
+      return `<div style="display:flex;justify-content:space-between;gap:12px;"><span style="color:#64748b;">${label}</span><span style="font-weight:600;color:#1e293b;">${format ? format(raw) : raw}</span></div>`
+    }).filter(Boolean)
+    if (rows.length === 0) {
+      popup.remove()
+      return
+    }
+    popup.setLngLat(e.lngLat).setHTML(`<div style="font-size:12px;">${rows.join('')}</div>`).addTo(map)
   })
 }
 
@@ -181,18 +222,29 @@ export default function GisStudioPage() {
     if (!mapContainerRef.current || mapRef.current) return
     const map = new MaplibreMap({
       container: mapContainerRef.current,
-      style: BASE_STYLE,
+      style: PRIMARY_STYLE_URL,
       center: [74.8, 13.35],
       zoom: 12,
       attributionControl: { compact: true },
     })
-    map.addControl(new NavigationControl({ showCompass: false }), 'top-right')
-    map.on('load', () => {
+    const rerenderOverlay = () => {
       isStyleLoadedRef.current = true
       if (overlayQuery.data) renderOverlay(map, overlayQuery.data, visibleTypes)
-    })
+    }
+    attachBasemapFallback(map, rerenderOverlay)
+    map.addControl(new NavigationControl({ showCompass: false }), 'top-right')
+    map.on('load', rerenderOverlay)
+    attachFeatureHoverTooltips(map)
     mapRef.current = map
+
+    // The map's flex/absolute-positioned container can still be mid-layout
+    // (or briefly 0×0, e.g. right after a route transition) at the exact
+    // moment MapLibre measures it to size its WebGL canvas — resize() once
+    // layout has settled so the canvas isn't left stuck at that stale size.
+    const resizeTimer = window.setTimeout(() => map.resize(), 200)
+
     return () => {
+      window.clearTimeout(resizeTimer)
       map.remove()
       mapRef.current = null
       isStyleLoadedRef.current = false
@@ -273,8 +325,8 @@ export default function GisStudioPage() {
         })}
       </div>
 
-      <div className="relative min-h-[480px] flex-1 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
-        <div ref={mapContainerRef} className="absolute inset-0" />
+      <div className="relative h-[500px] w-full min-h-[500px] flex-1 overflow-hidden rounded-xl border border-slate-200 shadow-sm">
+        <div ref={mapContainerRef} className="absolute inset-0 h-full w-full" />
         {overlayQuery.isLoading && (
           <div className="absolute inset-0 flex items-center justify-center bg-white/70">
             <Loader2 className="h-6 w-6 animate-spin text-slate-400" />

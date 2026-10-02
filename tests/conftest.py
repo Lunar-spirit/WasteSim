@@ -19,6 +19,7 @@ from app.comparison import models as _comparison_models  # noqa: E402,F401
 from app.core.config import settings  # noqa: E402
 from app.core.db import Base, get_db  # noqa: E402
 from app.core.security import hash_password  # noqa: E402
+from app.daily_logs import models as _daily_logs_models  # noqa: E402,F401
 from app.gis import models as _gis_models  # noqa: E402,F401
 from app.habitation import models as _habitation_models  # noqa: E402,F401
 from app.ingestion import models as _ingestion_models  # noqa: E402,F401
@@ -97,6 +98,14 @@ TEST_DEFINITIONS = [
     ("demography", "population", "Population", "INTEGER", 1, 10_000_000, True, False),
     ("demography", "annual_growth_rate_pct", "Annual growth rate", "NUMERIC", -5, 10, True, True),
     ("waste_baseline", "per_capita_generation_kg_day", "Per-capita generation", "NUMERIC", 0.05, 5, True, False),
+    # JSON type, no numeric min/max. Needed so a BASE run's daily-logs
+    # calibration step (app/simulation/service.py) can pass a
+    # `waste_baseline.composition` override through _validate_overrides —
+    # deliberately is_required=False here (unlike the real catalogue seed)
+    # so this stand-in doesn't change the completeness_pct every other
+    # parameters/validation test already asserts against, since none of
+    # them fill in a waste-baseline composition today.
+    ("waste_baseline", "composition", "Waste composition", "JSON", None, None, False, False),
 ]
 
 

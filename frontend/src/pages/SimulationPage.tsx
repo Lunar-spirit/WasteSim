@@ -18,6 +18,7 @@ import {
   Legend,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -37,9 +38,9 @@ import {
 import { useAppContext } from '../context/AppContext'
 import { useCurrentUser } from '../hooks/useCurrentUser'
 import { setDraftPsid } from '../lib/history'
-import type { BudgetLine, ReportStatus, RunStatus, SimulationYearly } from '../types/api'
+import type { BudgetLine, ReportStatus, RunFinding, RunStatus, SimulationYearly } from '../types/api'
 
-const HORIZON_YEARS = 10
+const HORIZON_YEARS = 20
 
 function formatCrores(value: number): string {
   return `₹${(value / 1e7).toFixed(2)} Cr`
@@ -87,14 +88,33 @@ function KpiCard({ icon, label, value }: { icon: React.ReactNode; label: string;
   )
 }
 
-function TrajectoryTab({ series, isLoading }: { series: SimulationYearly[]; isLoading: boolean }) {
+const MILESTONE_FINDINGS: { code: string; label: string; colour: string }[] = [
+  { code: 'LANDFILL_EXHAUSTION_YEAR', label: 'Landfill exhausted', colour: '#dc2626' },
+  { code: 'TREATMENT_SATURATION_YEAR', label: 'Treatment capacity saturated', colour: '#f59e0b' },
+]
+
+function TrajectoryTab({
+  series,
+  findings,
+  isLoading,
+}: {
+  series: SimulationYearly[]
+  findings: RunFinding[]
+  isLoading: boolean
+}) {
   const [indicator, setIndicator] = useState<ChartIndicator>('total_cost_inr')
   const active = INDICATOR_OPTIONS.find((o) => o.key === indicator)!
+  const milestones = MILESTONE_FINDINGS.map((m) => ({
+    ...m,
+    year: findings.find((f) => f.code === m.code)?.year_index,
+  })).filter((m): m is typeof m & { year: number } => m.year != null)
 
   return (
     <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">10-Year Trajectory</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+          {series.length || HORIZON_YEARS}-Year Trajectory
+        </h2>
         <div className="flex flex-wrap gap-1">
           {INDICATOR_OPTIONS.map((opt) => (
             <button
@@ -115,16 +135,37 @@ function TrajectoryTab({ series, isLoading }: { series: SimulationYearly[]; isLo
         <div className="flex h-80 items-center justify-center text-sm text-slate-400">No completed run yet.</div>
       )}
       {series.length > 0 && (
-        <ResponsiveContainer width="100%" height={340}>
-          <LineChart data={series} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-            <XAxis dataKey="year_index" tickFormatter={(v) => `Yr ${v}`} stroke="#64748b" fontSize={12} />
-            <YAxis stroke="#64748b" fontSize={12} tickFormatter={(v: number) => (v > 100000 ? `${(v / 1e5).toFixed(0)}L` : `${v}`)} />
-            <Tooltip formatter={(value: number) => active.format(value)} labelFormatter={(v) => `Year ${v}`} />
-            <Legend />
-            <Line type="monotone" dataKey={indicator} name={active.label} stroke="#10b981" strokeWidth={2.5} dot={{ r: 3 }} />
-          </LineChart>
-        </ResponsiveContainer>
+        <>
+          <ResponsiveContainer width="100%" height={340}>
+            <LineChart data={series} margin={{ top: 8, right: 16, bottom: 0, left: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+              <XAxis dataKey="year_index" tickFormatter={(v) => `Y${v}`} stroke="#64748b" fontSize={12} />
+              <YAxis stroke="#64748b" fontSize={12} tickFormatter={(v: number) => (v > 100000 ? `${(v / 1e5).toFixed(0)}L` : `${v}`)} />
+              <Tooltip formatter={(value) => active.format(Number(value))} labelFormatter={(v) => `Year ${v}`} />
+              <Legend />
+              {milestones.map((m) => (
+                <ReferenceLine
+                  key={m.code}
+                  x={m.year}
+                  stroke={m.colour}
+                  strokeDasharray="4 4"
+                  label={{ value: m.label, position: 'top', fill: m.colour, fontSize: 10 }}
+                />
+              ))}
+              <Line type="monotone" dataKey={indicator} name={active.label} stroke="#10b981" strokeWidth={2.5} dot={{ r: 3 }} />
+            </LineChart>
+          </ResponsiveContainer>
+          {milestones.length > 0 && (
+            <div className="mt-2 flex flex-wrap gap-3 text-[11px] text-slate-500">
+              {milestones.map((m) => (
+                <span key={m.code} className="flex items-center gap-1">
+                  <span className="h-2 w-2 rounded-full" style={{ backgroundColor: m.colour }} />
+                  {m.label}: Year {m.year}
+                </span>
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   )
@@ -328,6 +369,14 @@ export default function SimulationPage() {
     enabled: activeRunId !== null && isRunCompleted,
   })
 
+  // Shared cache key with FindingsTab's own query below — milestone markers
+  // on the trajectory chart and the Findings & Alerts tab read the same data.
+  const findingsQuery = useQuery({
+    queryKey: ['findings', activeRunId],
+    queryFn: () => fetchSimulationFindings(activeRunId as string),
+    enabled: isRunCompleted && !!activeRunId,
+  })
+
   const series = resultsQuery.data?.series ?? []
   const totalCostInr = series.reduce((sum, row) => sum + row.total_cost_inr, 0)
   const opexInr = series.reduce((sum, row) => sum + row.opex_inr, 0)
@@ -414,6 +463,21 @@ export default function SimulationPage() {
         {runMutation.isError && <p className="text-xs text-red-600">{(runMutation.error as Error).message}</p>}
         {runStatusQuery.data?.status === 'FAILED' && <p className="text-xs text-red-600">Run failed: {runStatusQuery.data.error_detail}</p>}
 
+        {runStatusQuery.data?.meta &&
+          (runStatusQuery.data.meta.calibrated_from_daily_logs ? (
+            <span
+              title="This run's waste-generation and composition inputs were derived from logged field data, not just the committed parameter set."
+              className="flex w-fit items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-2.5 py-1 text-[11px] font-medium text-emerald-700"
+            >
+              <Sparkles className="h-3 w-3" />
+              Calibrated with Field Data ({runStatusQuery.data.meta.log_sample_count} Logs)
+            </span>
+          ) : (
+            <span className="flex w-fit items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-medium text-slate-500">
+              Theoretical Parameter Baseline
+            </span>
+          ))}
+
         <div className="mt-2 flex items-center justify-between rounded-lg border border-slate-200 p-3">
           <div>
             <p className="text-xs font-medium text-slate-600">Detailed Project Report</p>
@@ -434,7 +498,7 @@ export default function SimulationPage() {
       {/* RIGHT: results & visuals */}
       <section className="flex flex-col gap-6 lg:col-span-2">
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-3 xl:grid-cols-5">
-          <KpiCard icon={<IndianRupee className="h-5 w-5 text-emerald-600" />} label="10-Year NPV Cost" value={series.length ? formatCrores(totalCostInr) : '—'} />
+          <KpiCard icon={<IndianRupee className="h-5 w-5 text-emerald-600" />} label={`${series.length || HORIZON_YEARS}-Year NPV Cost`} value={series.length ? formatCrores(totalCostInr) : '—'} />
           <KpiCard icon={<Table2 className="h-5 w-5 text-sky-600" />} label="OPEX / CAPEX" value={series.length ? `${formatCrores(opexInr)} / ${formatCrores(capexInr)}` : '—'} />
           <KpiCard icon={<TrendingUp className="h-5 w-5 text-sky-600" />} label="Avg Coverage" value={series.length ? `${avgCoveragePct.toFixed(1)}%` : '—'} />
           <KpiCard icon={<Recycle className="h-5 w-5 text-amber-600" />} label="Landfill Diversion" value={series.length ? `${diversionRatePct.toFixed(1)}%` : '—'} />
@@ -456,7 +520,13 @@ export default function SimulationPage() {
           ))}
         </div>
 
-        {tab === 'trajectory' && <TrajectoryTab series={series} isLoading={resultsQuery.isLoading && !!activeRunId && isRunCompleted} />}
+        {tab === 'trajectory' && (
+          <TrajectoryTab
+            series={series}
+            findings={findingsQuery.data ?? []}
+            isLoading={resultsQuery.isLoading && !!activeRunId && isRunCompleted}
+          />
+        )}
         {tab === 'budget' && <BudgetTab runId={isRunCompleted ? activeRunId : null} />}
         {tab === 'findings' && <FindingsTab runId={isRunCompleted ? activeRunId : null} />}
       </section>

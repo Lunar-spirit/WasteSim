@@ -32,6 +32,7 @@ class SimulationRunOut(BaseModel):
     status: RunStatus
     param_overrides: dict[str, Any]
     config: dict[str, Any]
+    meta: dict[str, Any]
     job_id: str | None
     progress_pct: int
     error_detail: str | None

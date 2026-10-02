@@ -61,6 +61,8 @@ async def test_pdf_report_generates_and_downloads(client, planner_headers):
     assert pdf_resp.status_code == 200
     assert pdf_resp.content[:4] == b"%PDF"
     assert len(pdf_resp.content) > 500
+    assert pdf_resp.headers["content-type"].startswith("application/pdf")
+    assert "attachment" in pdf_resp.headers.get("content-disposition", "")
 
 
 async def test_xlsx_comparison_report_generates(client, planner_headers):

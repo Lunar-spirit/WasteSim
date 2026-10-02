@@ -1,11 +1,18 @@
 import { useMutation } from '@tanstack/react-query'
-import { Bot, Loader2, Send, Sparkles, User, X } from 'lucide-react'
+import { Bot, Info, Loader2, Send, Sparkles, User, X } from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 import { createChatSession, sendChatQuery } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
 import type { ChatMessage } from '../types/api'
 
 const QUICK_PROMPTS = ['Summarize 10-year budget', 'Are there any vehicle shortages?']
+
+// Shown regardless of whether a live LLM provider is configured (this
+// deployment has none set — EXT-05/T-57: the feature must fully
+// demonstrate offline) — a planner should know what Ask AI can actually do
+// before they rely on it, not discover the boundary mid-conversation.
+const FALLBACK_DISCLAIMER =
+  "Ask AI runs on a deterministic tool set, not a freeform language model. It can: summarize a run's budget & findings, compare runs, explain what changed between two runs, kick off a scenario/sensitivity/optimization run, or auto-populate habitation data — always grounded in this habitation's own stored numbers, never invented ones."
 
 interface LocalMessage {
   id: string | number
@@ -70,7 +77,7 @@ export default function ChatDrawer() {
       {isCopilotOpen && (
         <button
           type="button"
-          aria-label="Close copilot"
+          aria-label="Close Ask AI"
           onClick={() => setIsCopilotOpen(false)}
           className="fixed inset-0 z-40 bg-slate-900/20"
         />
@@ -83,7 +90,7 @@ export default function ChatDrawer() {
         <header className="flex items-center justify-between border-b border-slate-200 px-4 py-3">
           <div className="flex items-center gap-2">
             <Sparkles className="h-4 w-4 text-emerald-600" />
-            <h2 className="text-sm font-semibold text-slate-800">AI Copilot</h2>
+            <h2 className="text-sm font-semibold text-slate-800">Ask AI — SWMS Planning Assistant</h2>
           </div>
           <button
             type="button"
@@ -94,6 +101,11 @@ export default function ChatDrawer() {
             <X className="h-4 w-4" />
           </button>
         </header>
+
+        <div className="flex items-start gap-1.5 border-b border-slate-100 bg-slate-50 px-4 py-2 text-[11px] leading-snug text-slate-500">
+          <Info className="mt-0.5 h-3 w-3 shrink-0" />
+          <span>{FALLBACK_DISCLAIMER}</span>
+        </div>
 
         <div ref={scrollRef} className="flex-1 space-y-3 overflow-y-auto px-4 py-4">
           {sessionMutation.isPending && (
@@ -174,7 +186,7 @@ export default function ChatDrawer() {
             type="text"
             value={input}
             onChange={(e) => setInput(e.target.value)}
-            placeholder="Ask the copilot…"
+            placeholder="Ask AI…"
             disabled={!sessionId}
             className="flex-1 rounded-full border border-slate-300 px-4 py-2 text-sm focus:border-emerald-500 focus:outline-none focus:ring-1 focus:ring-emerald-500 disabled:bg-slate-50"
           />

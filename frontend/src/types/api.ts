@@ -138,6 +138,15 @@ export interface SimulationRun {
   status: RunStatus
   param_overrides: Record<string, unknown>
   config: Record<string, unknown>
+  // Populated by app/simulation/service.py's calibration step for a BASE
+  // run — see app/daily_logs/service.py's empirical aggregates.
+  meta: {
+    calibrated_from_daily_logs: boolean
+    log_sample_count?: number
+    empirical_per_capita_kg?: number
+    empirical_organic_pct?: number
+    empirical_diesel_l_per_tonne?: number
+  }
   job_id: string | null
   progress_pct: number
   error_detail: string | null
@@ -181,6 +190,33 @@ export interface SimulationYearly {
 export interface SimulationResultsResponse {
   aggregate: 'yearly' | 'monthly'
   series: SimulationYearly[]
+}
+
+// One row of simulation_results (the monthly table) — used only for its
+// nine composition-fraction percentage columns, which simulation_yearly
+// doesn't carry (see app/simulation/models.py: SimulationResult vs
+// SimulationYearly). The composition mix is set once by the waste
+// baseline and the engine doesn't drift it year to year, so any month's
+// row (the report charts use the most recent one) reflects the run's
+// whole-horizon composition.
+export interface SimulationMonthly {
+  month_index: number
+  year_index: number
+  waste_total_tpd: number
+  organic_pct: number
+  plastic_pct: number
+  paper_pct: number
+  metal_pct: number
+  glass_pct: number
+  textile_pct: number
+  inert_pct: number
+  ewaste_pct: number
+  other_pct: number
+}
+
+export interface SimulationMonthlyResultsResponse {
+  aggregate: 'monthly'
+  series: SimulationMonthly[]
 }
 
 // --- Reports -----------------------------------------------------------------
@@ -567,4 +603,37 @@ export interface ComparisonDeltaRow {
 export interface ComparisonDeltas {
   base_run_id: string
   deltas: Record<string, ComparisonDeltaRow[]>
+}
+
+// --- Daily operational logs -------------------------------------------------
+
+export type AnomalyFlag = 'NORMAL' | 'MONSOON_FLOOD' | 'FESTIVAL_SURGE' | 'WORKER_STRIKE' | 'BREAKDOWN'
+
+export interface DailyLogIn {
+  log_date: string
+  total_collected_tonnes: number
+  organic_tonnes: number
+  dry_recyclable_tonnes: number
+  hazardous_tonnes?: number | null
+  vehicles_deployed: number
+  trips_completed: number
+  diesel_consumed_litres?: number | null
+  collection_coverage_pct_observed?: number | null
+  anomaly_flag: AnomalyFlag
+  notes?: string | null
+}
+
+export interface DailyLog extends DailyLogIn {
+  id: string
+  habitation_id: string
+  logged_by: string
+  created_at: string
+  updated_at: string
+}
+
+export interface DailyLogPage {
+  items: DailyLog[]
+  total: number
+  page: number
+  page_size: number
 }

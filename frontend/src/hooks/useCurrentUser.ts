@@ -16,6 +16,8 @@ export function useCurrentUser() {
     user: query.data,
     isLoading: query.isLoading,
     isAdmin: query.data?.role === 'ADMIN',
+    isPlanner: query.data?.role === 'PLANNER',
+    isResearcher: query.data?.role === 'RESEARCHER',
     isViewer: query.data?.role === 'VIEWER',
   }
 }

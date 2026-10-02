@@ -11,6 +11,10 @@ import type {
   ComparisonDeltas,
   ComparisonSeries,
   CurrentUser,
+  DailyLog,
+  DailyLogIn,
+  DailyLogPage,
+  SimulationMonthlyResultsResponse,
   EventCatalogueItem,
   EventIn,
   GISLayer,
@@ -158,6 +162,17 @@ export async function fetchSimulationResults(runId: string): Promise<SimulationR
   const { data } = await apiClient.get<ApiEnvelope<SimulationResultsResponse>>(
     `/api/v1/simulations/${runId}/results`,
     { params: { aggregate: 'yearly' } },
+  )
+  return unwrap(data)
+}
+
+/** The only reason reports/charts reach for the monthly aggregate: it's
+ * the one that carries the nine composition-fraction percentage columns
+ * (simulation_yearly doesn't). */
+export async function fetchSimulationMonthlyResults(runId: string): Promise<SimulationMonthlyResultsResponse> {
+  const { data } = await apiClient.get<ApiEnvelope<SimulationMonthlyResultsResponse>>(
+    `/api/v1/simulations/${runId}/results`,
+    { params: { aggregate: 'monthly' } },
   )
   return unwrap(data)
 }
@@ -423,6 +438,46 @@ export async function fetchComparisonDeltas(comparisonId: string): Promise<Compa
     `/api/v1/comparisons/${comparisonId}/deltas`,
   )
   return unwrap(data)
+}
+
+// --- Daily operational logs --------------------------------------------------
+
+export async function upsertDailyLog(
+  habitationId: string,
+  payload: DailyLogIn,
+): Promise<DailyLog & { created: boolean }> {
+  const { data } = await apiClient.post<ApiEnvelope<DailyLog & { created: boolean }>>(
+    `/api/v1/habitations/${habitationId}/daily-logs`,
+    payload,
+  )
+  return unwrap(data)
+}
+
+export async function fetchDailyLogs(
+  habitationId: string,
+  params: { from_date?: string; to_date?: string; page?: number; page_size?: number } = {},
+): Promise<DailyLogPage> {
+  const { data } = await apiClient.get<ApiEnvelope<DailyLogPage>>(
+    `/api/v1/habitations/${habitationId}/daily-logs`,
+    { params },
+  )
+  return unwrap(data)
+}
+
+/** ADMIN-only. Returns the raw CSV text plus the filename the backend
+ * proposed via Content-Disposition, so the caller can trigger a save
+ * without the browser re-deriving a name from the URL. */
+export async function exportDailyLogsCsv(
+  habitationId: string,
+  params: { from_date?: string; to_date?: string } = {},
+): Promise<{ csv: string; filename: string }> {
+  const response = await apiClient.get<string>(`/api/v1/habitations/${habitationId}/daily-logs/export`, {
+    params: { format: 'csv', ...params },
+    responseType: 'text',
+  })
+  const disposition = response.headers['content-disposition'] as string | undefined
+  const match = disposition?.match(/filename="?([^"]+)"?/)
+  return { csv: response.data, filename: match?.[1] ?? `daily_logs_${habitationId}.csv` }
 }
 
 // --- Chat ------------------------------------------------------------------

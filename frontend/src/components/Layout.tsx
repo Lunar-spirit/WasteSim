@@ -8,6 +8,7 @@ import {
   Lock,
   LogOut,
   Map as MapIcon,
+  NotebookPen,
   Plus,
   ShieldCheck,
   SlidersHorizontal,
@@ -26,6 +27,7 @@ import CreateHabitationModal from './CreateHabitationModal'
 
 const NAV_ITEMS = [
   { to: '/gis', label: 'GIS Studio', icon: MapIcon },
+  { to: '/daily-logs', label: 'Daily Logs', icon: NotebookPen },
   { to: '/parameters', label: 'Parameters', icon: SlidersHorizontal },
   { to: '/simulation', label: 'Simulation & Budget', icon: LayoutDashboard },
   { to: '/scenarios', label: 'Scenarios', icon: CloudRain },
@@ -86,6 +88,19 @@ function Header() {
     queryFn: fetchHabitations,
   })
 
+  // currentHabitationId starts out as a hardcoded seed default (see
+  // AppContext.tsx) that can outlive the habitation it points to — once the
+  // real list loads, fall back to the first habitation rather than leaving
+  // the app pointed at an id that 404s on every fetch.
+  useEffect(() => {
+    const habitations = habitationsQuery.data
+    if (!habitations || habitations.length === 0) return
+    if (habitations.some((h) => h.id === currentHabitationId)) return
+    setCurrentHabitationId(habitations[0].id)
+    setActiveRunId(null)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [habitationsQuery.data])
+
   function handleHabitationChange(id: string) {
     setCurrentHabitationId(id)
     // A run belongs to one habitation — switching habitations without a
@@ -132,10 +147,10 @@ function Header() {
             type="button"
             onClick={() => setIsCopilotOpen(true)}
             className="flex items-center gap-2 rounded-lg bg-emerald-600 px-3.5 py-2 text-sm font-medium text-white transition hover:bg-emerald-700"
-            title="Cmd/Ctrl+K"
+            title="Ask AI — Cmd/Ctrl+K"
           >
             <Sparkles className="h-4 w-4" />
-            Open AI Copilot
+            Ask AI
           </button>
           <button
             type="button"

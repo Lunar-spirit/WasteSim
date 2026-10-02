@@ -1,7 +1,8 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { Download, FileText, Loader2 } from 'lucide-react'
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { createReport, fetchReport, fetchReportDownloadUrl, listSimulations } from '../api/endpoints'
+import { CompositionBreakdownChart, FinancialOverviewChart, TrajectoryChart } from '../components/reports/ReportCharts'
 import { useAppContext } from '../context/AppContext'
 import { useHistory } from '../lib/history'
 import type { ReportFormat, ReportStatus } from '../types/api'
@@ -14,6 +15,12 @@ export default function ReportsPage() {
   const runsQuery = useQuery({ queryKey: ['simulations', currentHabitationId], queryFn: () => listSimulations(currentHabitationId) })
   const completedRuns = (runsQuery.data ?? []).filter((r) => r.status === 'COMPLETED')
   const comparisonHistory = useHistory('comparison', currentHabitationId)
+
+  const [chartRunId, setChartRunId] = useState<string>('')
+  useEffect(() => {
+    if (!chartRunId && completedRuns.length > 0) setChartRunId(completedRuns[0].id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [completedRuns])
 
   const [scope, setScope] = useState<'run' | 'comparison'>('run')
   const [selectedRunId, setSelectedRunId] = useState<string>('')
@@ -48,6 +55,39 @@ export default function ReportsPage() {
   return (
     <div className="flex flex-col gap-6 p-6">
       <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Official DPR &amp; Report Center</h2>
+
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Visual Analytics</h3>
+          <label className="flex items-center gap-1.5 text-xs text-slate-500">
+            Run
+            <select
+              value={chartRunId}
+              onChange={(e) => setChartRunId(e.target.value)}
+              className="rounded-md border border-slate-300 px-2 py-1 text-xs"
+            >
+              {completedRuns.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.label ?? r.id.slice(0, 8)} ({r.run_type})
+                </option>
+              ))}
+            </select>
+          </label>
+        </div>
+        {!chartRunId ? (
+          <p className="rounded-xl border border-slate-200 bg-white py-6 text-center text-sm text-slate-400">
+            No completed runs yet for this habitation.
+          </p>
+        ) : (
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
+            <div className="xl:col-span-2">
+              <TrajectoryChart runId={chartRunId} />
+            </div>
+            <CompositionBreakdownChart runId={chartRunId} />
+            <FinancialOverviewChart runId={chartRunId} />
+          </div>
+        )}
+      </div>
 
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
         <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Report Configuration</h3>

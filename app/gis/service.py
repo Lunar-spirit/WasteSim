@@ -415,7 +415,7 @@ async def get_features_geojson(
     await _get_habitation_or_404(db, habitation_id)
 
     stmt = (
-        select(GISFeature.id, GISFeature.properties, func.ST_AsGeoJSON(GISFeature.geom))
+        select(GISFeature.id, GISFeature.properties, GISFeature.length_m, func.ST_AsGeoJSON(GISFeature.geom))
         .join(GISLayer, GISLayer.id == GISFeature.layer_id)
         .where(GISLayer.habitation_id == habitation_id)
     )
@@ -429,10 +429,14 @@ async def get_features_geojson(
             {
                 "type": "Feature",
                 "id": feature_id,
-                "properties": properties or {},
+                # length_m lives in its own column (only LineString features
+                # have one), not inside the uploaded file's own properties —
+                # merged in here so a frontend hover tooltip can show it
+                # without a second request per feature.
+                "properties": {**(properties or {}), **({"length_m": length_m} if length_m is not None else {})},
                 "geometry": json.loads(geom_json),
             }
-            for feature_id, properties, geom_json in rows
+            for feature_id, properties, length_m, geom_json in rows
         ],
     }
 

@@ -110,6 +110,10 @@ class SimulationRun(Base):
     status: Mapped[RunStatus] = mapped_column(Enum(RunStatus, name="run_status"), default=RunStatus.QUEUED)
     param_overrides: Mapped[dict] = mapped_column(JSONB, default=dict)
     config: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Provenance, not an engine input: whether/how this run's param_overrides
+    # were derived from app.daily_logs field data rather than the committed
+    # parameter set alone. See app/simulation/service.py's create_run().
+    meta: Mapped[dict] = mapped_column(JSONB, default=dict)
     job_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     progress_pct: Mapped[int] = mapped_column(SmallInteger, default=0)
     error_detail: Mapped[str | None] = mapped_column(Text, nullable=True)

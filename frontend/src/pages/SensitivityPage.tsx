@@ -1,5 +1,5 @@
 import { useMutation, useQuery } from '@tanstack/react-query'
-import { Activity, Loader2 } from 'lucide-react'
+import { Activity, Info, Loader2, Lock } from 'lucide-react'
 import { useMemo, useState } from 'react'
 import {
   createSensitivitySweep,
@@ -10,6 +10,8 @@ import {
   listSimulations,
 } from '../api/endpoints'
 import { useAppContext } from '../context/AppContext'
+import { useCurrentUser } from '../hooks/useCurrentUser'
+import { formatInrCrores, formatInrFull, RESTRICTED_CURRENCY_LABEL } from '../lib/format'
 import { pushHistory, useHistory } from '../lib/history'
 import type { AnalysisStatus } from '../types/api'
 
@@ -27,6 +29,49 @@ const SWEEPABLE_PARAMS = [
   'demography.annual_growth_rate_pct',
 ]
 
+// Plain-English labels — presentation-layer only, the backend still sees
+// and stores the real dotted param path.
+const PARAM_LABELS: Record<string, string> = {
+  'waste_baseline.per_capita_generation_kg_day': 'Per-Capita Waste Generation (kg/day)',
+  'community_infrastructure.collection_vehicles_count': 'Number of Collection Vehicles',
+  'community_infrastructure.collection_coverage_pct': 'Collection Coverage (%)',
+  'community_infrastructure.treatment_capacity_tpd': 'Treatment Capacity (tonnes/day)',
+  'natural_resources.annual_rainfall_mm': 'Annual Rainfall (mm)',
+  'cultural_context.segregation_practice_pct': 'Waste Segregation Practice (%)',
+  'demography.annual_growth_rate_pct': 'Population Growth Rate (%/year)',
+}
+
+// Matches app/sensitivity/service.py's DEFAULT_INDICATORS exactly — this
+// page never sends its own `indicators` list, so these three are always
+// what comes back.
+const INDICATOR_LABELS: Record<string, string> = {
+  LANDFILL_EXHAUSTION_YEAR: 'Landfill Lifespan (Years to Capacity)',
+  NPV_TOTAL_COST: '20-Year Cumulative System Cost',
+  RECOVERY_RATE_Y20: 'Year 20 Waste Diversion Rate',
+}
+
+// Economics & Labor sensitivity bucket (same boundary as the budget/
+// parameter masking elsewhere) — the only one of the three default
+// indicators that is an actual rupee figure, not a physical metric.
+const CURRENCY_INDICATORS = new Set(['NPV_TOTAL_COST'])
+
+function humanizeIndicator(indicator: string): string {
+  return INDICATOR_LABELS[indicator] ?? indicator
+}
+
+function humanizeParam(paramPath: string): string {
+  return PARAM_LABELS[paramPath] ?? paramPath
+}
+
+const ELASTICITY_TOOLTIP = 'Elasticity measures how much the outcome changes when this parameter shifts by 1%.'
+
+function elasticityBadge(value: number): { label: string; className: string } {
+  const abs = Math.abs(value)
+  if (abs >= 1.0) return { label: 'Critical Impact', className: 'bg-red-100 text-red-700 ring-1 ring-red-200' }
+  if (abs >= 0.2) return { label: 'Moderate Impact', className: 'bg-amber-100 text-amber-700 ring-1 ring-amber-200' }
+  return { label: 'Stable', className: 'bg-slate-100 text-slate-600 ring-1 ring-slate-200' }
+}
+
 const POLL_STATUSES: AnalysisStatus[] = ['QUEUED', 'RUNNING']
 
 function buildSweepValues(baseline: number, lowPct: number, highPct: number, steps: number): number[] {
@@ -42,6 +87,7 @@ function buildSweepValues(baseline: number, lowPct: number, highPct: number, ste
 
 export default function SensitivityPage() {
   const { currentHabitationId, activeRunId } = useAppContext()
+  const { isViewer } = useCurrentUser()
 
   const runsQuery = useQuery({ queryKey: ['simulations', currentHabitationId], queryFn: () => listSimulations(currentHabitationId) })
   const baseRuns = (runsQuery.data ?? []).filter((r) => r.run_type === 'BASE' && r.status === 'COMPLETED')
@@ -114,12 +160,12 @@ export default function SensitivityPage() {
   return (
     <div className="flex flex-col gap-6 p-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Sensitivity &amp; Tornado Analyzer</h2>
+        <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">Risk &amp; What-If Analyzer</h2>
         <div className="flex items-center gap-3">
           <label className="flex items-center gap-2 text-sm">
-            <span className="text-slate-500">Base run</span>
+            <span className="text-slate-500">Current Baseline Plan</span>
             <select value={effectiveBaseRunId ?? ''} onChange={(e) => setBaseRunId(e.target.value)} className="rounded-md border border-slate-300 px-2.5 py-1.5 text-sm">
-              {!effectiveBaseRunId && <option value="">Select a completed BASE run…</option>}
+              {!effectiveBaseRunId && <option value="">Select a completed baseline plan…</option>}
               {baseRuns.map((r) => (
                 <option key={r.id} value={r.id}>
                   {r.label ?? r.id.slice(0, 8)}
@@ -146,14 +192,14 @@ export default function SensitivityPage() {
       <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
         {/* Configurator */}
         <div className="flex flex-col gap-4 rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Parameter Sweep Configurator</h3>
+          <h3 className="text-xs font-semibold uppercase tracking-wide text-slate-500">Select Parameter to Stress-Test</h3>
 
           <label className="flex flex-col gap-1 text-sm">
             <span className="font-medium text-slate-700">Parameter</span>
             <select value={paramPath} onChange={(e) => setParamPath(e.target.value)} className="rounded-md border border-slate-300 px-3 py-2 text-sm">
               {SWEEPABLE_PARAMS.map((p) => (
                 <option key={p} value={p}>
-                  {p}
+                  {humanizeParam(p)}
                 </option>
               ))}
             </select>
@@ -178,18 +224,30 @@ export default function SensitivityPage() {
           </div>
 
           {previewValues.length > 0 && (
-            <p className="text-xs text-slate-500">Evaluation points: {previewValues.join(', ')}</p>
+            <p className="text-xs text-slate-500">Test Values Tested: {previewValues.join(', ')}</p>
           )}
 
-          <button
-            type="button"
-            onClick={() => sweepMutation.mutate()}
-            disabled={!effectiveBaseRunId || baselineValue == null || sweepMutation.isPending}
-            className="mt-2 flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
-          >
-            {sweepMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
-            Run Sweep
-          </button>
+          {isViewer ? (
+            <button
+              type="button"
+              disabled
+              title="Apply for Researcher access from the top navbar to run a what-if test"
+              className="mt-2 flex cursor-not-allowed items-center justify-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-4 py-2.5 text-sm font-medium text-slate-400"
+            >
+              <Lock className="h-4 w-4" />
+              🔒 Researcher Access Required
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => sweepMutation.mutate()}
+              disabled={!effectiveBaseRunId || baselineValue == null || sweepMutation.isPending}
+              className="mt-2 flex items-center justify-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700 disabled:opacity-60"
+            >
+              {sweepMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
+              Run Sweep
+            </button>
+          )}
           {sweepMutation.isError && <p className="text-xs text-red-600">{(sweepMutation.error as Error).message}</p>}
           {analysisQuery.data && (
             <p className="text-xs text-slate-500">
@@ -201,8 +259,13 @@ export default function SensitivityPage() {
 
         {/* Elasticity table */}
         <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-          <h3 className="mb-3 text-xs font-semibold uppercase tracking-wide text-slate-500">Elasticity Coefficient Table</h3>
-          {!analysisQuery.data && <p className="text-sm text-slate-400">Run a sweep to see per-point elasticity.</p>}
+          <h3 className="mb-3 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-slate-500">
+            Impact Responsiveness Table
+            <span title={ELASTICITY_TOOLTIP}>
+              <Info className="h-3.5 w-3.5 cursor-help text-slate-400" />
+            </span>
+          </h3>
+          {!analysisQuery.data && <p className="text-sm text-slate-400">Run a sweep to see how sensitive each outcome is.</p>}
           {analysisQuery.data && analysisQuery.data.status !== 'COMPLETED' && (
             <p className="text-sm text-slate-400">Waiting for the sweep to complete…</p>
           )}
@@ -210,10 +273,10 @@ export default function SensitivityPage() {
             <table className="w-full text-xs">
               <thead>
                 <tr className="text-left text-slate-500">
-                  <th className="py-1 font-medium">Swept value</th>
+                  <th className="py-1 font-medium">Test value</th>
                   {analysisQuery.data.indicators.map((ind) => (
                     <th key={ind} className="py-1 font-medium">
-                      {ind} elasticity
+                      {humanizeIndicator(ind)}
                     </th>
                   ))}
                 </tr>
@@ -224,9 +287,25 @@ export default function SensitivityPage() {
                     <td className="py-1.5">{p.swept_value}</td>
                     {analysisQuery.data!.indicators.map((ind) => {
                       const e = p.elasticity?.[ind]
+                      if (e == null) {
+                        return (
+                          <td key={ind} className="py-1.5">
+                            —
+                          </td>
+                        )
+                      }
+                      const badge = elasticityBadge(Number(e))
                       return (
                         <td key={ind} className="py-1.5">
-                          {e != null ? Number(e).toFixed(3) : '—'}
+                          <span className="inline-flex items-center gap-1.5">
+                            {Number(e).toFixed(3)}
+                            <span
+                              title={ELASTICITY_TOOLTIP}
+                              className={`cursor-help rounded-full px-1.5 py-0.5 text-[10px] font-medium ${badge.className}`}
+                            >
+                              {badge.label}
+                            </span>
+                          </span>
                         </td>
                       )
                     })}
@@ -240,27 +319,42 @@ export default function SensitivityPage() {
 
       {/* Tornado chart */}
       <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-        <h3 className="mb-4 text-xs font-semibold uppercase tracking-wide text-slate-500">
-          Tornado Chart — indicators most affected by {paramPath}
+        <h3 className="mb-1 text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Risk Priority Ranking: Which outcomes shift the most?
         </h3>
+        <p className="mb-4 text-[11px] text-slate-400">Testing: {humanizeParam(paramPath)}</p>
         {!tornadoQuery.data?.length && <p className="text-sm text-slate-400">No completed sweep to chart yet.</p>}
         <div className="flex flex-col gap-2">
-          {(tornadoQuery.data ?? []).map((row) => (
-            <div key={row.indicator} className="flex items-center gap-3">
-              <span className="w-48 shrink-0 text-right text-xs text-slate-600">{row.indicator}</span>
-              <div className="relative h-5 flex-1 rounded bg-slate-100">
-                <div
-                  className="h-5 rounded bg-emerald-500/70"
-                  style={{ width: `${Math.max(2, (row.range / maxAbsRange) * 100)}%` }}
-                />
+          {(tornadoQuery.data ?? []).map((row) => {
+            const isCurrency = CURRENCY_INDICATORS.has(row.indicator)
+            const masked = isCurrency && isViewer
+            return (
+              <div key={row.indicator} className="flex items-center gap-3">
+                <span className="w-48 shrink-0 text-right text-xs text-slate-600">{humanizeIndicator(row.indicator)}</span>
+                <div className="relative h-5 flex-1 rounded bg-slate-100">
+                  <div
+                    className="h-5 rounded bg-emerald-500/70"
+                    style={{ width: `${Math.max(2, (row.range / maxAbsRange) * 100)}%` }}
+                  />
+                </div>
+                <span className="w-44 shrink-0 text-xs text-slate-500">
+                  {masked ? (
+                    <span className="font-medium text-amber-700">{RESTRICTED_CURRENCY_LABEL}</span>
+                  ) : isCurrency ? (
+                    <span title={`${formatInrFull(row.min_value)} – ${formatInrFull(row.max_value)}`}>
+                      {formatInrCrores(row.min_value)} – {formatInrCrores(row.max_value)}
+                    </span>
+                  ) : (
+                    <>
+                      {row.min_value.toLocaleString('en-IN', { maximumFractionDigits: 1 })} –{' '}
+                      {row.max_value.toLocaleString('en-IN', { maximumFractionDigits: 1 })}
+                    </>
+                  )}
+                  {row.max_abs_elasticity != null && ` (ε=${row.max_abs_elasticity.toFixed(2)})`}
+                </span>
               </div>
-              <span className="w-32 shrink-0 text-xs text-slate-500">
-                {row.min_value.toLocaleString('en-IN', { maximumFractionDigits: 1 })} –{' '}
-                {row.max_value.toLocaleString('en-IN', { maximumFractionDigits: 1 })}
-                {row.max_abs_elasticity != null && ` (ε=${row.max_abs_elasticity.toFixed(2)})`}
-              </span>
-            </div>
-          ))}
+            )
+          })}
         </div>
       </div>
     </div>

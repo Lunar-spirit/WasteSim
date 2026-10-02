@@ -64,6 +64,72 @@ async def _validate_overrides(db: AsyncSession, overrides: dict[str, Any]) -> No
             )
 
 
+def _rescale_composition_for_empirical_organic_pct(baseline_composition: dict[str, float], organic_pct: float) -> dict:
+    """Daily logs only split waste into organic vs. dry-recyclable (plus an
+    optional hazardous figure) — far coarser than the 9-fraction composition
+    a parameter set carries. Rather than inventing a plastic/paper/metal/...
+    split the logs don't support, this keeps the baseline's own *relative*
+    shares among every non-organic fraction and rescales them to fit
+    whatever share the empirical data leaves for "not organic"."""
+    non_organic_total = sum(v for k, v in baseline_composition.items() if k != "organic")
+    remaining_pct = 100 - organic_pct
+    if non_organic_total <= 0:
+        return {"organic": organic_pct, "other": remaining_pct}
+    scale = remaining_pct / non_organic_total
+    rescaled = {k: v * scale for k, v in baseline_composition.items() if k != "organic"}
+    rescaled["organic"] = organic_pct
+    return rescaled
+
+
+async def _calibrate_from_daily_logs(
+    db: AsyncSession, habitation_id: uuid.UUID, parameter_set_id: uuid.UUID
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Returns (calibrated_overrides, meta) for a new BASE run. Empty
+    overrides + `{"calibrated_from_daily_logs": False}` when there isn't
+    enough field data (or no recorded population to scale it against) — the
+    caller falls back to the committed parameter set exactly as before this
+    feature existed."""
+    from app.daily_logs.service import get_calibration_aggregates
+
+    aggregates = await get_calibration_aggregates(db, habitation_id)
+    if aggregates is None:
+        return {}, {"calibrated_from_daily_logs": False}
+
+    full = await get_parameter_set_full(db, parameter_set_id)
+    population = (full["categories"].get("demography") or {}).get("population")
+    if not population:
+        # Can't turn a logged kg/day total into a per-capita figure without
+        # a population to divide by — nothing safe to calibrate.
+        return {}, {"calibrated_from_daily_logs": False, "log_sample_count": aggregates.sample_count}
+
+    empirical_per_capita_kg = aggregates.mean_total_kg_day / float(population)
+
+    overrides: dict[str, Any] = {"waste_baseline.per_capita_generation_kg_day": round(empirical_per_capita_kg, 4)}
+    meta: dict[str, Any] = {
+        "calibrated_from_daily_logs": True,
+        "log_sample_count": aggregates.sample_count,
+        "empirical_per_capita_kg": round(empirical_per_capita_kg, 2),
+    }
+    if aggregates.mean_diesel_l_per_tonne is not None:
+        # Informational only — no existing engine coefficient consumes a
+        # diesel-per-tonne figure, so this doesn't feed the OPEX cost curve
+        # (app/engine/costs.py); it's surfaced so a planner can see it and
+        # a future coefficient can be added deliberately rather than this
+        # calibration step silently reshaping the cost model.
+        meta["empirical_diesel_l_per_tonne"] = round(aggregates.mean_diesel_l_per_tonne, 2)
+
+    wet_dry_total = aggregates.mean_organic_tonnes + aggregates.mean_dry_recyclable_tonnes
+    baseline_composition = (full["waste_baseline"] or {}).get("composition")
+    if wet_dry_total > 0 and baseline_composition:
+        organic_pct = aggregates.mean_organic_tonnes / wet_dry_total * 100
+        overrides["waste_baseline.composition"] = _rescale_composition_for_empirical_organic_pct(
+            baseline_composition, organic_pct
+        )
+        meta["empirical_organic_pct"] = round(organic_pct, 1)
+
+    return overrides, meta
+
+
 async def create_run(
     db: AsyncSession, habitation_id: uuid.UUID, payload: Any, user: User
 ) -> tuple[SimulationRun, bool]:
@@ -92,7 +158,20 @@ async def create_run(
     else:
         coeff_set = await get_or_create_default_coefficient_set(db, user)
 
-    await _validate_overrides(db, payload.param_overrides)
+    run_meta: dict[str, Any] = {"calibrated_from_daily_logs": False}
+    final_overrides = dict(payload.param_overrides)
+    if payload.run_type == RunType.BASE:
+        calibrated_overrides, calibration_meta = await _calibrate_from_daily_logs(db, habitation_id, ps.id)
+        # A planner's own explicit override always wins over calibration —
+        # calibration only fills in what wasn't already specified. If every
+        # calibrated key got shadowed that way (e.g. the dashboard's own
+        # per-capita slider always sends a value), the run wasn't actually
+        # calibrated by anything, whatever _calibrate_from_daily_logs found.
+        calibration_applied = any(key not in payload.param_overrides for key in calibrated_overrides)
+        final_overrides = {**calibrated_overrides, **payload.param_overrides}
+        run_meta = calibration_meta if calibration_applied else {**calibration_meta, "calibrated_from_daily_logs": False}
+
+    await _validate_overrides(db, final_overrides)
 
     if payload.run_type == RunType.BASE:
         existing = await db.scalar(
@@ -102,7 +181,7 @@ async def create_run(
                 SimulationRun.coefficient_set_id == coeff_set.id,
                 SimulationRun.run_type == RunType.BASE,
                 SimulationRun.horizon_years == payload.horizon_years,
-                SimulationRun.param_overrides == payload.param_overrides,
+                SimulationRun.param_overrides == final_overrides,
                 SimulationRun.status.in_([RunStatus.QUEUED, RunStatus.RUNNING, RunStatus.COMPLETED]),
             )
             .order_by(SimulationRun.created_at.desc())
@@ -118,8 +197,9 @@ async def create_run(
         run_type=payload.run_type,
         label=payload.label,
         horizon_years=payload.horizon_years,
-        param_overrides=payload.param_overrides,
+        param_overrides=final_overrides,
         config=payload.config,
+        meta=run_meta,
         status=RunStatus.QUEUED,
         created_by=user.id,
     )

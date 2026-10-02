@@ -64,13 +64,28 @@ def put_object(key: str, data: bytes, content_type: str) -> None:
         raise AppError("STORAGE_UNAVAILABLE", f"Object storage unreachable: {exc}", 503) from exc
 
 
-def get_presigned_url(key: str, expires_seconds: int) -> str:
+def get_presigned_url(key: str, expires_seconds: int, download_filename: str | None = None) -> str:
     """A time-limited download URL (design's own words for reports.expires_at
     / EXT-04's "time-limited download URL") — the caller never gets a raw
-    bucket path, only a signed link that stops working after `expires_seconds`."""
+    bucket path, only a signed link that stops working after `expires_seconds`.
+
+    `download_filename`, when given, overrides the response's
+    Content-Disposition for this one signed URL only (MinIO's
+    `response-content-disposition` query-param override) — the stored
+    object's own metadata (content_type, set at put_object time) is
+    untouched, so this doesn't rename the object itself, only what a
+    browser following this particular link offers to save it as.
+    """
     client = get_client()
+    response_headers = (
+        {"response-content-disposition": f'attachment; filename="{download_filename}"'}
+        if download_filename
+        else None
+    )
     try:
-        return client.presigned_get_object(settings.minio_bucket, key, expires=timedelta(seconds=expires_seconds))
+        return client.presigned_get_object(
+            settings.minio_bucket, key, expires=timedelta(seconds=expires_seconds), response_headers=response_headers
+        )
     except S3Error as exc:
         raise AppError("STORAGE_UNAVAILABLE", f"Object storage unreachable: {exc}", 503) from exc
 

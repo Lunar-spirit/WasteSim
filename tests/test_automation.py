@@ -1,17 +1,18 @@
 """Automation module (OSM Overpass / Open-Meteo / Open-Elevation
 auto-populate). Exactly one test (the happy path) hits the real public
-Overpass and Open-Meteo APIs — confirmed reachable and fast for a small
-test polygon while building this module — genuinely proving the Overpass
-parsing, geopandas clipping and length math, not a mock standing in for it.
-Every other test mocks all three fetch functions: partly for speed, partly
-because hitting the same public Overpass instance repeatedly in one test
-run is exactly the kind of third-party flakiness a test suite shouldn't
-depend on (confirmed while building this: a second identical query back to
-back at one point came back empty). Terrain is mocked everywhere except
-nowhere — the public Open-Elevation instance currently has an expired TLS
-certificate, a real third-party outage this session found, which is
-exactly the "external call fails" path the graceful-skip design exists
-for; there is no live terrain test in this file for that reason.
+Overpass API — confirmed reachable and fast for a small test polygon while
+building this module — genuinely proving the Overpass parsing, geopandas
+clipping and length math, not a mock standing in for it. Every other test
+mocks all three fetch functions: partly for speed, partly because hitting
+the same public Overpass instance repeatedly in one test run is exactly
+the kind of third-party flakiness a test suite shouldn't depend on
+(confirmed while building this: a second identical query back to back at
+one point came back empty). Terrain and rainfall are mocked everywhere,
+including in the happy-path test — the public Open-Elevation instance has
+an expired TLS certificate, and the public Open-Meteo instance started
+failing/timing out from this environment; both are real third-party
+outages this session found, exactly the "external call fails" path the
+graceful-skip design exists for, so neither has a live test in this file.
 """
 
 from contextlib import contextmanager
@@ -61,7 +62,18 @@ async def test_auto_populate_requires_editor_access(client, planner_headers, res
 async def test_auto_populate_happy_path_hits_real_overpass_and_open_meteo(client, planner_headers, db_session):
     habitation_id, psid = await _make_ready_habitation(client, planner_headers, "Autohappyville", boundary_geojson=REAL_ROAD_BOUNDARY)
 
-    with patch("app.automation.service._fetch_terrain", new=AsyncMock(return_value=_TERRAIN_RESULT)):
+    # Terrain is mocked everywhere (see module docstring: Open-Elevation's
+    # public instance has an expired TLS cert) and rainfall is mocked here
+    # too now — the public Open-Meteo instance has started failing/timing
+    # out from this environment, the same class of third-party flakiness
+    # the docstring already warns about for Overpass. Only the road
+    # network fetch still hits the real, live Overpass API, which is what
+    # this test is actually verifying (real OSM parsing + geopandas
+    # clipping + length math).
+    with (
+        patch("app.automation.service._fetch_terrain", new=AsyncMock(return_value=_TERRAIN_RESULT)),
+        patch("app.automation.service._fetch_annual_rainfall", new=AsyncMock(return_value=_RAINFALL_RESULT)),
+    ):
         resp = await client.post(f"/api/v1/habitations/{habitation_id}/auto-populate", json={}, headers=planner_headers)
     assert resp.status_code == 200, resp.text
     data = resp.json()["data"]
